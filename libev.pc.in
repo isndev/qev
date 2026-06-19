@@ -1,0 +1,13 @@
+# Relocatable: prefix is derived from this file's location (<prefix>/<libdir>/pkgconfig).
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: libev
+Description: A modernized, cross-platform fork of libev (drop-in ev_* API)
+URL: https://github.com/isndev/qb-ev
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lev
+Libs.private: @QB_EV_PC_PRIVATE_LIBS@
+Cflags: -I${includedir}

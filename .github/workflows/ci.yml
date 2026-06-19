@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: linux-${{ matrix.cc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake make pkg-config autoconf automake libtool m4 perl \
+            ${{ matrix.cc == 'gcc' && 'gcc g++' || 'clang' }}
+      - name: Build matrix (CMake static/shared + autotools + sanitizers + backends)
+        env:
+          STRICT: 1
+          CC: ${{ matrix.cc == 'gcc' && 'gcc' || 'clang' }}
+          CXX: ${{ matrix.cc == 'gcc' && 'g++' || 'clang++' }}
+        run: bash scripts/test-build-matrix.sh native
+
+  macos:
+    name: macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install autotools
+        run: brew install autoconf automake libtool
+      - name: Build matrix
+        env:
+          STRICT: 1
+        run: bash scripts/test-build-matrix.sh native
+
+  windows:
+    name: windows-msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (CMake, wepoll/epoll backend)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release

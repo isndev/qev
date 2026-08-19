@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an idea for qev
+title: "[feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that qev makes hard today?
+    validations: { required: true }
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: >
+        What you would like to see. Note any impact on the `ev_*` API or on struct layouts —
+        consumers compile against them, so a change there needs a version bump.
+    validations: { required: true }
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations: { required: false }
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Platforms or backends concerned
+      options:
+        - { label: Linux (epoll / io_uring / linuxaio) }
+        - { label: macOS or BSD (kqueue) }
+        - { label: Windows (wepoll) }
+        - { label: Solaris / illumos (event ports) }
+        - { label: portable fallbacks (poll / select) }
+        - { label: build system, packaging or docs }

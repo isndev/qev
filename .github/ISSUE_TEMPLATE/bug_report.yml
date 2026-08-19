@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a problem in qev
+title: "[bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong
+      description: A clear description of the behaviour you see.
+    validations: { required: true }
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Linux, macOS, Windows, FreeBSD, OpenBSD, NetBSD, Solaris / illumos, other]
+    validations: { required: true }
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend in use
+      description: "`ev_backend()` reports it at runtime, and it is the first thing a bug in an event loop depends on."
+      options: [epoll, kqueue, io_uring, linuxaio, event ports, wepoll (Windows), poll, select, "not sure"]
+    validations: { required: true }
+
+  - type: input
+    id: version
+    attributes:
+      label: qev version or commit
+      placeholder: "5.0.0, or a commit sha"
+    validations: { required: true }
+
+  - type: input
+    id: toolchain
+    attributes:
+      label: Compiler and version
+      placeholder: "gcc 14.2, clang 19, MSVC 19.51"
+    validations: { required: true }
+
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options: [CMake static, CMake shared, autotools static, autotools shared, other]
+    validations: { required: true }
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproducer
+      description: Minimal code or steps. A small `.c` using `ev_*` is ideal.
+      render: c
+    validations: { required: true }
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected versus actual
+    validations: { required: true }
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Stack trace, ASan/UBSan output, `ev_supported_backends()` value.
+    validations: { required: false }

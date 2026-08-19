@@ -168,8 +168,13 @@ Vm=$(grep -m1 'EV_VERSION_MINOR' ev.h | grep -o '[0-9]*')
 CMV=$(grep -m1 -E '^[[:space:]]*VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 ACV=$(grep -m1 'AC_INIT' configure.ac | grep -oE '\[[0-9]+\.[0-9]+\]' | tr -d '[]')
 LTV=$(grep -m1 'VERSION_INFO *=' Makefile.am | grep -oE '[0-9]+:[0-9]+:[0-9]+')
-CLV=$(grep -m1 '^## \[' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-RDV=$(grep -m1 -oE 'version-[0-9]+\.[0-9]+' README.md | cut -d- -f2)
+# '^## \[[0-9]', not '^## \[': the first heading is now [Unreleased], which carries no number
+# and would make this yield an empty string that then 'disagrees' with every other site.
+CLV=$(grep -m1 -E '^## \[[0-9]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+# The README no longer carries a hand-typed version: the badge is derived from the latest
+# release by shields.io, so it cannot drift. What is checked instead is that it is STILL the
+# derived one -- reverting to a literal would reintroduce the very site this cell guards.
+RDV=$(grep -qF 'img.shields.io/github/v/release/isndev/qev' README.md && echo derived || echo MISSING)
 detail="ev.h=$V.$Vm cmake=$CMV autoconf=$ACV libtool=$LTV changelog=$CLV readme=$RDV"
 bad=""
 [ "$V" = 5 ] || bad="$bad ev.h-major"
@@ -177,7 +182,7 @@ bad=""
 [ "$ACV" = "$V.$Vm" ]   || bad="$bad autoconf"
 [ "$LTV" = "$V:$Vm:0" ] || bad="$bad libtool"
 [ "$CLV" = "$V.$Vm.0" ] || bad="$bad changelog"
-[ "$RDV" = "$V.$Vm" ]   || bad="$bad readme"
+[ "$RDV" = derived ]    || bad="$bad readme-badge-not-derived"
 [ -z "$bad" ] && res version-surface PASS "$detail" \
                || res version-surface FAIL "disagree:$bad ($detail)"
 

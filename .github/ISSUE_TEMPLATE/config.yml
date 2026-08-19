@@ -1,0 +1,10 @@
+# Blank issues stay enabled: this repository has no Discussions, so turning them off would
+# leave someone with a plain question nowhere to go.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/isndev/qev/security/advisories/new
+    about: Please do not open a public issue for a vulnerability — use a private advisory.
+  - name: qb Actor Framework
+    url: https://github.com/isndev/qb
+    about: qev is qb's event loop. Questions about actors, coroutines or the qbm modules belong there.

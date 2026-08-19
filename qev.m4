@@ -1,6 +1,6 @@
 dnl Derived from libev's libev.m4 (Marc Alexander Lehmann, BSD-2 -- see THIRD-PARTY-NOTICES).
 dnl Upstream: http://software.schmorp.de/pkg/libev
-dnl Feature detection only; it names no API symbol, so the ev_* -> qev_* rename does not reach it.
+dnl Feature detection only: it names no API symbol, so nothing here follows the artefact naming.
 
 dnl libev support
 AC_CHECK_HEADERS(sys/inotify.h sys/epoll.h sys/event.h port.h poll.h sys/timerfd.h)

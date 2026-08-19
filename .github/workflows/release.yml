@@ -1,0 +1,99 @@
+name: release
+
+# Cutting a release used to mean building the tarballs by hand and remembering what to exclude.
+# CPack already knows both answers, so the tag is what triggers them: push v5.0.1 and the source
+# archive and the per-platform component archives are built, checked and attached.
+on:
+  push:
+    tags: [ 'v[0-9]+.[0-9]+.[0-9]+' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archives:
+    name: archives-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+      - name: Package
+        working-directory: build
+        run: cpack -G TGZ -C Release
+      # A release archive nobody opened is a release archive that might be empty. Unpack it and
+      # require the header and the library to be inside before it is allowed near a release page.
+      - name: Verify the archives are not empty
+        shell: bash
+        working-directory: build
+        run: |
+          set -e
+          found=0
+          for a in *.tar.gz; do
+            [ -e "$a" ] || continue
+            found=$((found+1))
+            echo "-- $a"
+            tar tzf "$a" | sed 's/^/     /' | head -20
+          done
+          [ "$found" -ge 1 ] || { echo "::error::cpack produced no archive"; exit 1; }
+          tar tzf *Development*.tar.gz | grep -q 'include/qev/ev\.h' \
+            || { echo "::error::the development archive carries no ev.h"; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qev-${{ matrix.os }}
+          path: build/*.tar.gz
+          if-no-files-found: error
+
+  source:
+    name: source archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Package source
+        working-directory: build
+        run: cpack --config CPackSourceConfig.cmake -G TGZ
+      # The source release must build on its own. A tarball that needs the git tree is not a
+      # source release, and this is the only place that difference shows.
+      - name: The source archive must build standalone
+        shell: bash
+        working-directory: build
+        run: |
+          set -e
+          tar xzf qev-*-Source.tar.gz
+          d=$(ls -d qev-*-Source | head -1)
+          cmake -S "$d" -B /tmp/srcbuild -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/srcbuild -j2
+          ctest --test-dir /tmp/srcbuild --output-on-failure
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qev-source
+          path: build/qev-*-Source.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: attach to the release
+    needs: [ archives, source ]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # the one job that writes, and only to attach assets to its own tag
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { path: dist, merge-multiple: true }
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: dist/*.tar.gz
+          fail_on_unmatched_files: true

@@ -35,10 +35,33 @@ jobs:
           # Nothing in this workflow pushes, so the checkout has no reason to leave a
           # credential in .git/config for every later step to inherit.
           persist-credentials: false
+      # `apt-get update` with no retry is a single point of failure on a hosted runner: one slow
+      # mirror spends the entire job budget here and the run goes red for a reason that has
+      # nothing to do with the code. Measured on this workflow: 20 minutes in this step, timing
+      # the job out before a line was compiled, while the same commit was green on the three
+      # other platforms. Retried with backoff, and the install itself is retried too, because a
+      # mirror that is slow for one is usually slow for both.
       - name: Install toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake make pkg-config autoconf automake libtool m4 perl \
+          set -e
+          retry() {
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              echo "::warning::'$*' failed (attempt $attempt/3); retrying"
+              sleep $((attempt * 15))
+            done
+            echo "::error::'$*' failed three times"
+            return 1
+          }
+          # The timeouts matter more than the retry does. `apt-get update` has no timeout of its
+          # own: against an unresponsive mirror it simply waits, so a retry loop around it never
+          # gets a turn -- which is exactly what was measured, one attempt sitting for 20 minutes
+          # until the job budget ran out. Acquire::http::Timeout bounds each attempt so the loop
+          # can do its job.
+          APT_OPTS="-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=3"
+          retry sudo apt-get $APT_OPTS update -qq
+          retry sudo apt-get $APT_OPTS install -y --no-install-recommends \
+            cmake make pkg-config autoconf automake libtool m4 perl \
             ${{ matrix.cc == 'gcc' && 'gcc g++' || 'clang' }}
       - name: Build matrix (CMake static/shared · autotools · sanitizers · backends · census)
         env:

@@ -22,9 +22,15 @@ jobs:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # SHARED, deliberately. A static release build produces no runtime artefact, so the
+      # qev_Runtime component packages to an empty 29-byte tarball -- which is what the first run
+      # of this workflow attached to the release page. A shared build makes both components mean
+      # something: the versioned object and its SONAME on one side, headers, link symlink, CMake
+      # package and pkg-config on the other. Anyone wanting the static archive builds it from the
+      # source tarball, which is also attached and is verified to build on its own.
       - name: Configure and build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
           cmake --build build --config Release
       - name: Package
         working-directory: build
@@ -57,6 +63,14 @@ jobs:
           [ -n "$dev" ] || { echo "::error::no development archive was produced"; exit 1; }
           grep -q 'include/qev/ev\.h' "$dev" \
             || { echo "::error::the development archive carries no ev.h"; exit 1; }
+          # No archive may be trivially empty. An empty tarball is ~29 bytes and looks like a
+          # successful package right up until somebody downloads it; requiring an entry per
+          # archive is what turns that into a failed build instead of a bad release page.
+          for l in *.tar.gz.list; do
+            n=$(grep -c . "$l" || true)
+            echo "   ${l%.list}: $n entr(y|ies)"
+            [ "$n" -ge 1 ] || { echo "::error::${l%.list} is empty"; exit 1; }
+          done
           rm -f ./*.list
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

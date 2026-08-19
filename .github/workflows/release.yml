@@ -31,6 +31,14 @@ jobs:
         run: cpack -G TGZ -C Release
       # A release archive nobody opened is a release archive that might be empty. Unpack it and
       # require the header and the library to be inside before it is allowed near a release page.
+      # A release archive nobody opened is a release archive that might be empty. Unpack the
+      # listing and require the header to be inside before it goes near a release page.
+      #
+      # No pipe into `head` or `grep -q` here, and that is not style. GitHub runs `shell: bash` as
+      # `bash -eo pipefail`, and both of those close the pipe as soon as they have what they want,
+      # which kills `tar` with SIGPIPE -- so the pipeline fails on a PERFECTLY GOOD archive. That is
+      # exactly what happened on the first run of this job: the listing printed include/qev/ev.h and
+      # the step still reported it missing. The listing goes to a file, and the file is searched.
       - name: Verify the archives are not empty
         shell: bash
         working-directory: build
@@ -41,11 +49,16 @@ jobs:
             [ -e "$a" ] || continue
             found=$((found+1))
             echo "-- $a"
-            tar tzf "$a" | sed 's/^/     /' | head -20
+            tar tzf "$a" > "$a.list"
+            sed -n '1,20p' "$a.list" | sed 's/^/     /'
           done
           [ "$found" -ge 1 ] || { echo "::error::cpack produced no archive"; exit 1; }
-          tar tzf *Development*.tar.gz | grep -q 'include/qev/ev\.h' \
+          dev=$(ls *Development*.tar.gz.list 2>/dev/null | head -1) || true
+          [ -n "$dev" ] || { echo "::error::no development archive was produced"; exit 1; }
+          grep -q 'include/qev/ev\.h' "$dev" \
             || { echo "::error::the development archive carries no ev.h"; exit 1; }
+          rm -f ./*.list
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: qev-${{ matrix.os }}

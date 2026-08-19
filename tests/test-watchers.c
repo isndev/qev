@@ -55,6 +55,7 @@ static void test_periodic(void) {
 }
 
 /* ---- idle ---- */
+#if EV_IDLE_ENABLE
 static int idle_hit;
 static void idle_cb(struct ev_loop *l, ev_idle *w, int r) { (void)r; idle_hit = 1; ev_idle_stop(l, w); ev_break(l, EVBREAK_ALL); }
 static void test_idle(void) {
@@ -66,8 +67,13 @@ static void test_idle(void) {
   OK(idle_hit, "idle");
   ev_loop_destroy(l);
 }
+#else
+static void test_idle(void) { SKIP("idle", "EV_IDLE_ENABLE is 0 in this build"); }
+#endif
+
 
 /* ---- prepare + check ---- */
+#if EV_PREPARE_ENABLE
 static int prep_hit, chk_hit;
 static void prep_cb(struct ev_loop *l, ev_prepare *w, int r) { (void)l; (void)w; (void)r; prep_hit = 1; }
 static void chk_cb(struct ev_loop *l, ev_check *w, int r) { (void)w; (void)r; chk_hit = 1; ev_break(l, EVBREAK_ALL); }
@@ -83,8 +89,13 @@ static void test_prepare_check(void) {
   OK(chk_hit, "check");
   ev_loop_destroy(l);
 }
+#else
+static void test_prepare_check(void) { SKIP("prepare/check", "EV_PREPARE_ENABLE is 0 in this build"); }
+#endif
+
 
 /* ---- async ---- */
+#if EV_ASYNC_ENABLE
 static int async_hit;
 static void async_cb(struct ev_loop *l, ev_async *w, int r) { (void)r; async_hit = 1; ev_async_stop(l, w); ev_break(l, EVBREAK_ALL); }
 static void test_async(void) {
@@ -97,8 +108,13 @@ static void test_async(void) {
   OK(async_hit, "async");
   ev_loop_destroy(l);
 }
+#else
+static void test_async(void) { SKIP("async", "EV_ASYNC_ENABLE is 0 in this build"); }
+#endif
+
 
 /* ---- fork ---- */
+#if EV_FORK_ENABLE
 static int fork_hit;
 static void fork_cb(struct ev_loop *l, ev_fork *w, int r) { (void)r; fork_hit = 1; ev_fork_stop(l, w); ev_break(l, EVBREAK_ALL); }
 static void test_fork(void) {
@@ -111,6 +127,10 @@ static void test_fork(void) {
   OK(fork_hit, "fork");
   ev_loop_destroy(l);
 }
+#else
+static void test_fork(void) { SKIP("fork", "EV_FORK_ENABLE is 0 in this build"); }
+#endif
+
 
 /* ---- cleanup ---- */
 static int cleanup_hit;
@@ -171,6 +191,7 @@ static void test_signal(void) {
 }
 
 /* ---- child ---- */
+#if EV_CHILD_ENABLE
 static int child_hit;
 static void child_cb(struct ev_loop *l, ev_child *w, int r) { (void)r; child_hit = 1; ev_child_stop(l, w); ev_break(l, EVBREAK_ALL); }
 static void test_child(void) {
@@ -185,6 +206,10 @@ static void test_child(void) {
   ev_timer_stop(l, &wd);
   OK(child_hit, "child");
 }
+#else
+static void test_child(void) { SKIP("child", "EV_CHILD_ENABLE is 0 in this build"); }
+#endif
+
 
 /* ---- stat ---- */
 static int stat_hit;
@@ -208,6 +233,7 @@ static void test_stat(void) {
 }
 
 /* ---- embed (needs an embeddable inner backend + real I/O) ---- */
+#if EV_EMBED_ENABLE
 static int embed_hit;
 static void embed_io_cb(struct ev_loop *l, ev_io *w, int r) {
   (void)l; (void)r; char b[8]; ssize_t n = read(w->fd, b, sizeof b); (void)n; embed_hit = 1;
@@ -233,6 +259,10 @@ static void test_embed(void) {
   OK(embed_hit, "embed");
   close(sv[0]); close(sv[1]); ev_loop_destroy(inner); ev_loop_destroy(outer);
 }
+#else
+static void test_embed(void) { SKIP("embed", "EV_EMBED_ENABLE is 0 in this build"); }
+#endif
+
 #endif /* !_WIN32 */
 
 int main(void) {
@@ -258,5 +288,18 @@ int main(void) {
 #endif
 
   printf("\n== watchers: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
+
+  /* A suite that skipped everything exits 0 and reads as a pass, which is how a build with the
+     watcher families compiled out would have reported itself once the families became
+     conditional above. Four checks are unconditional in EVERY combination -- timer, periodic,
+     cleanup and once are in no reduced profile and need nothing POSIX-only -- so four is the
+     floor. It is deliberately the minimum over all of them rather than the count this platform
+     happens to reach: measured, a full POSIX build runs 14, a reduced POSIX build 7, and a
+     reduced Windows build exactly these 4. */
+  if (g_run < 4) {
+    printf("== FAIL: only %d checks ran; timer, periodic, cleanup and once are unconditional ==\n",
+           g_run);
+    return 1;
+  }
   return g_fail ? 1 : 0;
 }

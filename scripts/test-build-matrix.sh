@@ -328,6 +328,21 @@ if command -v nm >/dev/null 2>&1 && [ -f b-static/libqev.a ]; then
   fi
 else res symbol-census SKIP "no nm, or no static archive"; fi
 
+# ---- cell: the reduced watcher profile, which qb builds --------------------
+# CONTRIBUTING tells a contributor touching anything gated on EV_*_ENABLE to "test both:
+# -DQB_EV_WATCHERS_FULL=ON and =OFF". =OFF did not compile: the watcher suite used idle,
+# prepare, check, async, fork, child and embed unconditionally, so the profile qb actually
+# ships could not build its own tests, and the documented verification step was impossible
+# to carry out. Nothing measured it because nothing here had ever configured that way.
+if cmake -S . -B b-reduced -DCMAKE_BUILD_TYPE=Release -DQB_EV_WATCHERS_FULL=OFF >b-red-cfg.log 2>&1 \
+   && cmake --build b-reduced -j >b-red.log 2>&1; then
+  W=$(grep -ci 'warning:' b-red.log)
+  if [ "$W" != 0 ]; then res reduced-profile FAIL "$W warnings"
+  elif RED=$(./b-reduced/qev-test-watchers 2>&1 | grep '== watchers'); then
+    res reduced-profile PASS "$(echo "$RED" | tr -d '=' | sed 's/^ *//;s/ *$//')"
+  else res reduced-profile FAIL "the watcher suite produced no summary line"; fi
+else res reduced-profile FAIL "build error: $(tail -3 b-red.log b-red-cfg.log 2>/dev/null|tr '\n' ' ')"; fi
+
 # ---- cell: ev_wrap.h is reproducible from ev_vars.h -----------------------
 # update_ev_wrap regenerates 129 accessor macros, and nothing had ever asked it to reproduce
 # the file it maintains. It could not: its symbol regex was anchored at column 0, which the

@@ -34,7 +34,9 @@ it as `libqb-ev.a`. Two consequences you will run into:
 2. **qb builds a reduced profile.** Seven watcher families (idle, prepare, check, fork,
    child, async, embed) are compiled out there, so `struct ev_loop` has a different layout
    under qb than in a standalone build. If your change touches anything gated on
-   `EV_*_ENABLE`, test both: `-DQB_EV_WATCHERS_FULL=ON` and `=OFF`.
+   `EV_*_ENABLE`, test both: `-DQB_EV_WATCHERS_FULL=ON` and `=OFF`. The matrix's
+   `reduced-profile` cell does this on every run, so a change that only compiles under
+   the full profile is caught rather than discovered by qb.
 
 Fixes flow both ways. A backend bug surfaced by qb's test suite belongs here; an
 improvement here reaches qb on its next sync.
@@ -58,7 +60,8 @@ autotools is maintained alongside:
 
 Run the full matrix — CMake static and shared, autotools through `make install`, a
 `find_package(qev)` consumer in both link modes, ASan/UBSan, every backend, the C++
-wrapper, the exported-symbol census, and the shared-prefix install check:
+wrapper, the exported-symbol census, the shared-prefix install check, the reduced
+watcher profile qb ships, and a regeneration of `ev_wrap.h`:
 
 ```sh
 bash scripts/test-build-matrix.sh native

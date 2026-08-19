@@ -11,18 +11,31 @@ This manual documents B<qev>, a modernized, cross-platform fork of libev
 the qb Actor Framework and published standalone. It derives from Marc Alexander
 Lehmann's libev under BSD-2; see F<THIRD-PARTY-NOTICES> for the per-file map.
 
-B<qev is not a drop-in replacement for libev, and does not try to be.> Every C
-symbol carries a C<qev_> prefix -- C<ev_run>, C<ev_io_start>, C<ev_timer_init> --
-so an installed qev and an installed libev can sit in one prefix, and one
-translation unit can include both headers, without either shadowing the other.
-Migrating from libev is a mechanical C<ev_> to C<qev_> rename and nothing else;
-the semantics of every call below are libev's. The C<EV_*> B<macros> keep their
-upstream spelling on purpose: a differing redefinition is a required diagnostic in
-C, so that half of the namespace reports itself rather than colliding in silence.
-C<ev_version_major ()> reports C<5>.
+B<The C API is libev's, unchanged.> C<ev_run>, C<ev_io_start>, C<ev_timer_init>,
+C<struct ev_loop> -- every name, every signature, every semantic. Porting a libev
+program is one include-path edit and nothing else.
 
-The manual below is libev's, carried across the same rename the code took. The
-points that follow summarise what differs from upstream libev 4.x.
+B<What differs is the header path.> qev installs under F<include/qev/>, so the
+include is C<< #include <qev/ev.h> >>. The manual below is upstream libev's and
+spells it C<< #include <ev.h> >> throughout; substitute the qev path when copying
+from it. Everything reaching a filesystem is likewise qev's own -- the archive is
+F<libqev.a>, the CMake package is C<find_package(qev)>, pkg-config is F<qev.pc> --
+so an installed qev never overwrites an installed libev, and one translation unit
+can include C<< <qev/ev.h> >> and a real C<< <ev.h> >> together.
+
+B<What you cannot do is link both into one program.> Both export the same C<ev_*>
+symbols and libev is a single translation unit, so an archive is all-or-nothing:
+the linker either refuses with a duplicate-symbol error, or -- when the program
+touches only the symbols both provide -- resolves them silently from whichever
+archive came first. Pick one.
+
+qev is B<not> binary-compatible with libev 4.x and does not claim to be:
+C<ev_version_major ()> reports C<5>, and libev's own documented check,
+C<assert (ev_version_major () == EV_VERSION_MAJOR)>, a 4.x consumer fails by
+construction. Recompile; do not swap the object.
+
+The manual below is libev's, unchanged. The points that follow summarise what
+differs from upstream libev 4.x.
 
 Platform defaults and backends:
 

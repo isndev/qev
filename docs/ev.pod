@@ -2,15 +2,27 @@
 
 =head1 NAME
 
-libev - a high performance full-featured event loop written in C (qb-ev fork)
+qev - a high performance full-featured event loop written in C
 
-=head1 QB-EV FORK (VERSION 5)
+=head1 QEV (VERSION 5)
 
-This manual documents B<qb-ev>, a modernized, cross-platform fork of libev
-(L<http://software.schmorp.de/pkg/libev.html>) maintained as the event-loop core
-of the qb Actor Framework. The C<ev_*> API and ABI are unchanged, so the entire
-manual below applies verbatim; C<ev_version_major ()> now reports C<5>. The points
-below summarise what differs from upstream libev 4.x.
+This manual documents B<qev>, a modernized, cross-platform fork of libev
+(L<http://software.schmorp.de/pkg/libev.html>) maintained as the event-loop core of
+the qb Actor Framework and published standalone. It derives from Marc Alexander
+Lehmann's libev under BSD-2; see F<THIRD-PARTY-NOTICES> for the per-file map.
+
+B<qev is not a drop-in replacement for libev, and does not try to be.> Every C
+symbol carries a C<qev_> prefix -- C<ev_run>, C<ev_io_start>, C<ev_timer_init> --
+so an installed qev and an installed libev can sit in one prefix, and one
+translation unit can include both headers, without either shadowing the other.
+Migrating from libev is a mechanical C<ev_> to C<qev_> rename and nothing else;
+the semantics of every call below are libev's. The C<EV_*> B<macros> keep their
+upstream spelling on purpose: a differing redefinition is a required diagnostic in
+C, so that half of the namespace reports itself rather than colliding in silence.
+C<ev_version_major ()> reports C<5>.
+
+The manual below is libev's, carried across the same rename the code took. The
+points that follow summarise what differs from upstream libev 4.x.
 
 Platform defaults and backends:
 
@@ -122,7 +134,7 @@ This document documents the libev software package.
 
 The newest version of this document is also available as an html-formatted
 web page you might find easier to navigate when reading it for the first
-time: L<http://pod.tst.eu/http://cvs.schmorp.de/libev/ev.pod>.
+time: L<http://pod.tst.eu/http://cvs.schmorp.de/libev/qev.pod>.
 
 While this document tries to be as complete as possible in documenting
 libev, its usage and the rationale behind its design, it is not a tutorial
@@ -435,7 +447,7 @@ The default loop is the only loop that can handle C<ev_child> watchers,
 and to do this, it always registers a handler for C<SIGCHLD>. If this is
 a problem for your application you can either create a dynamic loop with
 C<ev_loop_new> which doesn't do that, or you can simply overwrite the
-C<SIGCHLD> signal handler I<after> calling C<ev_default_init>.
+C<SIGCHLD> signal handler I<after> calling C<ev_default_loop>.
 
 Example: This is the most typical usage.
 
@@ -1929,7 +1941,7 @@ attempt to read a whole line in the callback.
    }
 
    ...
-   struct ev_loop *loop = ev_default_init (0);
+   struct ev_loop *loop = ev_default_loop (0);
    ev_io stdin_readable;
    ev_io_init (&stdin_readable, stdin_readable_cb, STDIN_FILENO, EV_READ);
    ev_io_start (loop, &stdin_readable);
@@ -3395,7 +3407,7 @@ loop is stored in C<loop_hi>, while the embeddable loop is stored in
 C<loop_lo> (which is C<loop_hi> in the case no embeddable loop can be
 used).
 
-   struct ev_loop *loop_hi = ev_default_init (0);
+   struct ev_loop *loop_hi = ev_default_loop (0);
    struct ev_loop *loop_lo = 0;
    ev_embed embed;
 
@@ -3419,7 +3431,7 @@ a kqueue backend for use with sockets (which usually work with any
 kqueue implementation). Store the kqueue/socket-only event loop in
 C<loop_socket>. (One might optionally use C<EVFLAG_NOENV>, too).
 
-   struct ev_loop *loop = ev_default_init (0);
+   struct ev_loop *loop = ev_default_loop (0);
    struct ev_loop *loop_socket = 0;
    ev_embed embed;
 
@@ -4320,7 +4332,7 @@ For C<ev::embed> watchers this method is called C<set_embed>, to avoid
 clashing with the C<set (loop)> method.
 
 For C<ev::io> watchers there is an additional C<set> method that acepts a
-new event mask only, and internally calls C<ev_io_modfify>.
+new event mask only, and internally calls C<ev_io_modify>.
 
 =item w->start ()
 
@@ -4463,7 +4475,7 @@ loop argument"). The C<EV_A> form is used when this is the sole argument,
 C<EV_A_> is used when other arguments are following. Example:
 
    ev_unref (EV_A);
-   ev_timer_add (EV_A_ watcher);
+   ev_timer_start (EV_A_ watcher);
    ev_run (EV_A_ 0);
 
 It assumes the variable C<loop> of type C<struct ev_loop *> is in scope,
@@ -4498,7 +4510,7 @@ to initialise the loop somewhere.
 Usage identical to C<EV_DEFAULT> and C<EV_DEFAULT_>, but requires that the
 default loop has been initialised (C<UC> == unchecked). Their behaviour
 is undefined when the default loop has not been initialised by a previous
-execution of C<EV_DEFAULT>, C<EV_DEFAULT_> or C<ev_default_init (...)>.
+execution of C<EV_DEFAULT>, C<EV_DEFAULT_> or C<ev_default_loop (...)>.
 
 It is often prudent to use C<EV_DEFAULT> when initialising the first
 watcher in a function but use C<EV_DEFAULT_UC> afterwards.
@@ -4599,13 +4611,13 @@ You need the following additional files for this:
 =head3 AUTOCONF SUPPORT
 
 Instead of using C<EV_STANDALONE=1> and providing your configuration in
-whatever way you want, you can also C<m4_include([libev.m4])> in your
+whatever way you want, you can also C<m4_include([qev.m4])> in your
 F<configure.ac> and leave C<EV_STANDALONE> undefined. F<ev.c> will then
 include F<config.h> and configure itself accordingly.
 
 For this of course you need the m4 file:
 
-   libev.m4
+   qev.m4
 
 =head2 PREPROCESSOR SYMBOLS/MACROS
 
@@ -5584,7 +5596,7 @@ If you know of other additional requirements drop me a note.
 
 In this section the complexities of (many of) the algorithms used inside
 libev will be documented. For complexity discussions about backends see
-the documentation for C<ev_default_init>.
+the documentation for C<ev_default_loop>.
 
 All of the following are about amortised time: If an array needs to be
 extended, libev needs to realloc and move the whole array, but this

@@ -1,8 +1,8 @@
-dnl qb-ev autotools build. Keep ev.h EV_VERSION_MAJOR/MINOR in sync with the
+dnl qev autotools build. Keep ev.h EV_VERSION_MAJOR/MINOR in sync with the
 dnl version below.
 AC_PREREQ([2.69])
-AC_INIT([qb-ev],[5.0],[https://github.com/isndev/qb-ev/issues],[qb-ev],
-        [https://github.com/isndev/qb-ev])
+AC_INIT([qev],[5.0],[https://github.com/isndev/qev/issues],[qev],
+        [https://github.com/isndev/qev])
 
 orig_CFLAGS="$CFLAGS"
 
@@ -26,7 +26,7 @@ fi
 AC_PROG_INSTALL
 LT_INIT
 
-m4_include([libev.m4])
+m4_include([qev.m4])
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

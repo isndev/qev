@@ -4,7 +4,7 @@
 # Explicit binary-safe / generated markers
 *.pod    text
 *.m4     text
-Changes  text
+CHANGELOG.md text
 
 # Keep the project counted as C on GitHub (don't let the bundled wepoll skew stats).
 *.c linguist-language=C

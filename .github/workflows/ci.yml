@@ -49,3 +49,40 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release
+      # Until 3.0 this job stopped at the line above: it compiled, on the one platform this fork
+      # exists for -- a real epoll via wepoll, where libev only ever offered select -- and never
+      # ran a single watcher. The Windows keep-alive defect in `ev::io::set(int)` lived through
+      # two months of green runs of exactly that shape.
+      - name: Test (the watcher suite must actually run)
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Assert the suite was not empty
+        shell: bash
+        run: |
+          n=$(ctest --test-dir build -C Release -N | sed -n 's/^Total Tests: //p')
+          echo "registered tests: ${n:-0}"
+          [ "${n:-0}" -ge 1 ] || { echo "::error::ctest registered no tests — the suite did not build"; exit 1; }
+      # The invariant the rename exists for. It needs an archive, so it cannot live in a
+      # source-level guard; anything unprefixed here collides with a real libev or libevent on a
+      # consumer's link line and archive order picks the winner, silently.
+      # The invariant the artefact naming exists for, and it needs an ARCHIVE, so it cannot live
+      # in a source-level check.
+      #   ev_*      EXPECTED — the fork keeps libev's API names so a migrating consumer compiles
+      #             unchanged; only the header path and the artefact name are ours.
+      #   qev_*     FORBIDDEN — a spelling tried and abandoned; source says ev, artefact says qev.
+      #   event_*   FORBIDDEN unless QB_EV_LIBEVENT_COMPAT is ON: those 24 unprefixed names collide
+      #             with a real libevent, which is far more widely deployed than libev.
+      - name: Exported-symbol census
+        shell: pwsh
+        run: |
+          $lib = Get-ChildItem -Recurse -Filter qev.lib build | Select-Object -First 1
+          if (-not $lib) { Write-Error "qev.lib not found"; exit 1 }
+          $syms = & dumpbin /SYMBOLS $lib.FullName |
+                  Select-String -Pattern 'External\s+\|\s+(\w+)' -AllMatches |
+                  ForEach-Object { $_.Matches.Groups[1].Value } | Sort-Object -Unique
+          $ev    = @($syms | Where-Object { $_ -match '^_?ev_' })
+          $qev   = @($syms | Where-Object { $_ -match '^_?qev_' })
+          $event = @($syms | Where-Object { $_ -match '^_?event' })
+          Write-Host "ev_* = $($ev.Count);  qev_* = $($qev.Count);  event_* = $($event.Count)"
+          if ($ev.Count -lt 40)  { Write-Error "only $($ev.Count) ev_* symbols - the archive is not what it should be"; exit 1 }
+          if ($qev.Count -gt 0)  { Write-Error "abandoned qev_* spelling is back: $($qev -join ' ')"; exit 1 }
+          if ($event.Count -gt 0){ Write-Error "unprefixed event_*, the libevent shim must stay OFF: $($event -join ' ')"; exit 1 }

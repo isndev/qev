@@ -1,16 +1,63 @@
 # Changelog
 
-All notable changes to **qb-ev** are documented in this file. The format is based
+All notable changes to **qev** are documented in this file. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [5.0.0] — 2026-06-19
+## [5.0.0] — 2026-08-19
 
-qb-ev 5.0 is a heavily modernized fork of **libev 4.33** (upstream is effectively
-unmaintained) that also bundles a hardened **wepoll 1.5.8** for native Windows
-support. The `ev_*` API/ABI is preserved — existing libev code relinks unchanged;
-only `ev_version_major()` now reports `5`. Around **70 substantive code changes**
-versus upstream (license-header swaps, version bumps and whitespace excluded).
+qev 5.0 is the first release of the maintained continuation of **libev 4.33**, which
+upstream stopped at in 2020. It bundles a hardened **wepoll 1.5.8** for native Windows
+support and carries around **70 substantive code changes** versus 4.33 (license-header
+swaps, version bumps and whitespace excluded).
+
+### The C API is libev's, unchanged
+
+`ev_run`, `ev_io_start`, `ev_timer_init`, `struct ev_loop` — every name, every
+signature, every semantic. Porting a libev program is one include-path edit:
+`<ev.h>` becomes `<qev/ev.h>`. Nothing else moves.
+
+### Everything that reaches a filesystem is ours
+
+An installed qev never overwrites an installed libev. The archive is `libqev.a`, the
+headers install under `include/qev/`, the CMake package is `find_package(qev)` →
+`qb::ev`, pkg-config is `qev.pc`, the manual page is `qev.3`, and the include guards
+are `QB_EV_*` so one translation unit can hold both `<qev/ev.h>` and a real `<ev.h>`.
+
+What is **not** supported is linking qev and a real libev into the same program: both
+export the same `ev_*` symbols and libev is a single translation unit, so an archive
+is all-or-nothing. The linker either refuses with `duplicate symbol`, or — when the
+program touches only the symbols both provide — resolves them silently from whichever
+archive came first.
+
+qev is **not** binary-compatible with libev 4.x and does not claim to be:
+`ev_version_major()` reports 5, and libev's own documented check is
+`assert(ev_version_major() == EV_VERSION_MAJOR)`, which a 4.x consumer fails by
+construction. Recompile; do not swap the object.
+
+The `event.h` **libevent** compatibility layer is retained but **no longer built by
+default** (`-DQB_EV_LIBEVENT_COMPAT=ON`). It exports 24 *unprefixed* upstream libevent
+symbols, and libevent is far more widely deployed than libev.
+
+### Watcher families
+
+All fourteen are built in a standalone qev. A host that sets `QB_EV_WATCHERS_FULL=OFF`
+— as the qb Actor Framework does — compiles out idle, prepare, check, fork, child,
+async and embed: 16 fewer symbols on that host's link line, and a smaller
+`struct ev_loop`.
+
+### Packaging
+
+- **Component-aware install.** `qev_Runtime` carries the versioned shared object and
+  its SONAME symlink; `qev_Development` carries headers, static archive, unversioned
+  link symlink, CMake package and `qev.pc` — the `libqev` / `libqev-dev` split, drawn
+  by the build instead of by hand.
+- **CPack**, binary (per component) and source.
+- **`DEBUG_POSTFIX`** so a Debug and a Release build share a prefix without the second
+  overwriting the first.
+- **`target_compile_features(qev PUBLIC c_std_99)`** — the language level is a
+  contract, not a hope.
+- **`BUILD_TESTING`** honoured, so the switch every CI already sets works here.
 
 The two largest pieces of work are a from-scratch rewrite of the `io_uring`
 backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
@@ -31,7 +78,7 @@ backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
   on `_WIN32` the backend uses wepoll (IOCP/AFD-backed epoll) with a real
   `fd → SOCKET` translation, so `ev_io` can finally watch native winsock handles —
   something upstream's `_osfhandle` aliasing never actually made work.
-- **`event_compat.h`** vendored so legacy libevent 1.x code compiles against qb-ev.
+- **`event_compat.h`** vendored so legacy libevent 1.x code compiles against qev.
 
 ### Added
 
@@ -51,7 +98,7 @@ backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
 ### Changed
 
 - **macOS uses `kqueue` instead of `select`**: upstream strips `KQUEUE` on Apple
-  and forces `select` (O(n), `FD_SETSIZE` 1024 ceiling); qb-ev keeps kqueue for
+  and forces `select` (O(n), `FD_SETSIZE` 1024 ceiling); qev keeps kqueue for
   socket/pipe loops (only stripping the kqueue-backed, unreliable macOS `poll`),
   with a documented caveat that kqueue is not used for regular-file readiness.
 - **`select` demoted to a strict last-resort fallback** on every platform.
@@ -67,7 +114,7 @@ backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
 
 - **`ev_loop_destroy` use-after-close**: upstream unconditionally `close()`'d
   `backend_fd` *before* `iouring_destroy`/`linuxaio_destroy`, which then
-  munmap'd/stopped a watcher on a dead fd. qb-ev skips the close for those backends
+  munmap'd/stopped a watcher on a dead fd. qev skips the close for those backends
   and adds a wepoll `epoll_close` path.
 - **kqueue dropped registrations on EINTR**: the changelist was cleared before
   `kevent` consumed it; now `kevent` is EINTR-retried and the changelist cleared
@@ -76,11 +123,11 @@ backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
   (Winsock never returns negative) instead of `< 0` — upstream's check never fired
   (flagged with a TODO upstream).
 - **`port` backend scanned uninitialized completion slots**: `port_getn` leaves
-  `nget` undefined on error; qb-ev forces `nget = 0`.
+  `nget` undefined on error; qev forces `nget = 0`.
 - **`linuxaio` epoll `backend_fd` leak** closed on `io_setup` failure; the internal
   epoll watcher is stopped in destroy; `io_events[0]` zero-length array → C99 FAM.
 - **io_uring syscall-name typo**: upstream defined the fallback under the
-  non-existent `SYS_io_uring_wregister`; qb-ev uses the real `SYS_io_uring_register`
+  non-existent `SYS_io_uring_wregister`; qev uses the real `SYS_io_uring_register`
   (427).
 - **libevent compat shim (`event.c`)**: NULL-pointer guards across the whole API,
   idempotent `event_init`, correct `event_base_free`, and `event_pending` reports
@@ -95,7 +142,7 @@ backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
 - **Array-growth integer overflow**: geometric doubling now runs in `size_t`
   (signed-int `<<=` overflow is UB), the narrowing is clamped to `INT_MAX`, and
   `array_realloc` rejects byte sizes over `LONG_MAX` via `ev_syserr`.
-- **inotify read buffer aligned** to `struct ev_inotify_event` via a union (was
+- **inotify read buffer aligned** to `struct inotify_event` via a union (was
   misaligned int loads — UB, faults on strict-alignment CPUs).
 - **fd-range guards** before indexing `anfds[]` in the epoll/kqueue/poll/port paths.
 - **Bounded EINTR retry loops** (cap 255) around `select()`, `kevent()` and the
@@ -142,7 +189,7 @@ backend and making libev's `epoll` backend genuinely usable on Windows via IOCP.
 Based on libev © Marc Alexander Lehmann and wepoll © Bert Belder; see
 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES).
 
-qb-ev forks libev at 4.33. For the pre-5.0 (upstream libev) history, see the
+qev forks libev at 4.33. For the pre-5.0 (upstream libev) history, see the
 [libev changelog](http://cvs.schmorp.de/libev/Changes?view=markup).
 
-[5.0.0]: https://github.com/isndev/qb-ev/releases/tag/v5.0
+[5.0.0]: https://github.com/isndev/qev/releases/tag/v5.0

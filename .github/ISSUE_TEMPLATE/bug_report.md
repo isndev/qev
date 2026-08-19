@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report a problem in qb-ev
+about: Report a problem in qev
 title: "[bug] "
 labels: bug
 ---
@@ -9,7 +9,7 @@ labels: bug
 A clear description of what is wrong.
 
 **Environment**
-- qb-ev version / commit:
+- qev version / commit:
 - OS + version:
 - Compiler + version:
 - Backend (epoll / kqueue / io_uring / linuxaio / port / wepoll / select / poll):

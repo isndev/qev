@@ -1,0 +1,16 @@
+# Relocatable: prefix is derived from this file's location (<prefix>/<libdir>/pkgconfig).
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: qev
+Description: A modernized, cross-platform fork of libev (qev_* API, NOT drop-in)
+URL: https://github.com/isndev/qev
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lqev
+Libs.private: @QB_EV_PC_PRIVATE_LIBS@
+# -I<prefix>/include, so the spelling is <qev/ev.h> -- the SAME one find_package(qev)
+# gives. A .pc that pointed one level deeper would make the include line depend on how
+# the consumer found the library.
+Cflags: -I${includedir}

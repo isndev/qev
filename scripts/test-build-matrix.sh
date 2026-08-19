@@ -324,6 +324,28 @@ if command -v nm >/dev/null 2>&1 && [ -f b-static/libqev.a ]; then
   fi
 else res symbol-census SKIP "no nm, or no static archive"; fi
 
+# ---- cell: ev_wrap.h is reproducible from ev_vars.h -----------------------
+# update_ev_wrap regenerates 129 accessor macros, and nothing had ever asked it to reproduce
+# the file it maintains. It could not: its symbol regex was anchored at column 0, which the
+# clang preprocessor does not oblige, so it collected ONE symbol -- a run of the script would
+# have gutted a core header and the build would then have failed a long way from the cause.
+# It is the kind of script that gets run once a year, which is exactly why a machine has to
+# check it rather than a reader. Safe here because every cell already runs against $WORK, a
+# copy of the tree, so regenerating never touches the checkout.
+if have perl; then
+  cp ev_wrap.h "$WORK/ev_wrap.committed"
+  if sh ./update_ev_wrap >"$WORK/genwrap.log" 2>&1; then
+    if diff -q "$WORK/ev_wrap.committed" ev_wrap.h >/dev/null 2>&1; then
+      res ev-wrap-reproducible PASS "$(grep -c '^#define .* ((loop)' ev_wrap.h) accessors, byte-identical"
+    else
+      res ev-wrap-reproducible FAIL "regenerating changes ev_wrap.h ($(diff "$WORK/ev_wrap.committed" ev_wrap.h | grep -c '^[<>]') lines) - one of the two is wrong"
+    fi
+  else
+    res ev-wrap-reproducible FAIL "update_ev_wrap failed: $(tail -1 "$WORK/genwrap.log")"
+  fi
+  cp "$WORK/ev_wrap.committed" ev_wrap.h
+else res ev-wrap-reproducible SKIP "no perl"; fi
+
 echo "== SUMMARY mode=$MODE: PASS=$PASS FAIL=$FAIL SKIP=$SKIP =="
 if [ "${STRICT:-0}" = 1 ] && [ "$FAIL" -gt 0 ]; then exit 1; fi
 exit 0

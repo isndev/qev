@@ -2,26 +2,41 @@ name: ci
 
 on:
   push:
-    branches: [ main, master ]
+    # `develop` is where work lands and `main` is the released line; both are watched. `master`
+    # used to be listed and has never existed in this repository — a branch filter naming a branch
+    # that is not there is indistinguishable, from the outside, from a workflow that is running.
+    branches: [ main, develop ]
   pull_request:
   workflow_dispatch:
+
+# Least privilege. Nothing here writes to the repository, so nothing here needs a token that can.
+permissions:
+  contents: read
+
+# One run per ref. A push that lands while an earlier run is still going cancels it rather than
+# paying for a result nobody will read — except on the released line, where every commit's own
+# verdict is worth keeping.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   linux:
     name: linux-${{ matrix.cc }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake make pkg-config autoconf automake libtool m4 perl \
             ${{ matrix.cc == 'gcc' && 'gcc g++' || 'clang' }}
-      - name: Build matrix (CMake static/shared + autotools + sanitizers + backends)
+      - name: Build matrix (CMake static/shared · autotools · sanitizers · backends · census)
         env:
           STRICT: 1
           CC: ${{ matrix.cc == 'gcc' && 'gcc' || 'clang' }}
@@ -31,8 +46,9 @@ jobs:
   macos:
     name: macos
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install autotools
         run: brew install autoconf automake libtool
       - name: Build matrix
@@ -43,16 +59,17 @@ jobs:
   windows:
     name: windows-msvc
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Configure (CMake, wepoll/epoll backend)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release
-      # Until 3.0 this job stopped at the line above: it compiled, on the one platform this fork
+      # This job used to stop at the line above: it compiled, on the one platform this library
       # exists for -- a real epoll via wepoll, where libev only ever offered select -- and never
-      # ran a single watcher. The Windows keep-alive defect in `ev::io::set(int)` lived through
-      # two months of green runs of exactly that shape.
+      # ran a single watcher. A Windows keep-alive defect in `ev::io::set(int)` lived through two
+      # months of green runs of exactly that shape.
       - name: Test (the watcher suite must actually run)
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Assert the suite was not empty
@@ -60,29 +77,40 @@ jobs:
         run: |
           n=$(ctest --test-dir build -C Release -N | sed -n 's/^Total Tests: //p')
           echo "registered tests: ${n:-0}"
-          [ "${n:-0}" -ge 1 ] || { echo "::error::ctest registered no tests — the suite did not build"; exit 1; }
-      # The invariant the rename exists for. It needs an archive, so it cannot live in a
-      # source-level guard; anything unprefixed here collides with a real libev or libevent on a
-      # consumer's link line and archive order picks the winner, silently.
-      # The invariant the artefact naming exists for, and it needs an ARCHIVE, so it cannot live
-      # in a source-level check.
-      #   ev_*      EXPECTED — the fork keeps libev's API names so a migrating consumer compiles
-      #             unchanged; only the header path and the artefact name are ours.
-      #   qev_*     FORBIDDEN — a spelling tried and abandoned; source says ev, artefact says qev.
+          [ "${n:-0}" -ge 1 ] || { echo "::error::ctest registered no tests - the suite did not build"; exit 1; }
+      # The invariant the artefact naming exists for. It needs an ARCHIVE, so it cannot live in a
+      # source-level check.
+      #   ev_*      EXPECTED - the library keeps libev's API names, so a migrating consumer
+      #             compiles unchanged; only the header path and the artefact name are ours.
+      #   qev_*     FORBIDDEN - a spelling tried and abandoned; source says ev, artefact says qev.
       #   event_*   FORBIDDEN unless QB_EV_LIBEVENT_COMPAT is ON: those 24 unprefixed names collide
       #             with a real libevent, which is far more widely deployed than libev.
+      #
+      # `dumpbin` is NOT on PATH in a plain runner shell -- it lives in the MSVC toolchain, and a
+      # step that simply called it would fail for a reason having nothing to do with the symbols.
+      # vswhere ships at a fixed path on every windows runner, so the tool is located rather than
+      # assumed, and its absence is reported as itself.
       - name: Exported-symbol census
         shell: pwsh
         run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { Write-Error "vswhere not found - cannot locate the MSVC tools"; exit 1 }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { Write-Error "no MSVC toolchain reported by vswhere"; exit 1 }
+          $dumpbin = Get-ChildItem -Path "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if (-not $dumpbin) { Write-Error "dumpbin.exe not found under $vs"; exit 1 }
+          Write-Host "using $($dumpbin.FullName)"
+
           $lib = Get-ChildItem -Recurse -Filter qev.lib build | Select-Object -First 1
           if (-not $lib) { Write-Error "qev.lib not found"; exit 1 }
-          $syms = & dumpbin /SYMBOLS $lib.FullName |
+          $syms = & $dumpbin.FullName /SYMBOLS $lib.FullName |
                   Select-String -Pattern 'External\s+\|\s+(\w+)' -AllMatches |
                   ForEach-Object { $_.Matches.Groups[1].Value } | Sort-Object -Unique
           $ev    = @($syms | Where-Object { $_ -match '^_?ev_' })
           $qev   = @($syms | Where-Object { $_ -match '^_?qev_' })
           $event = @($syms | Where-Object { $_ -match '^_?event' })
           Write-Host "ev_* = $($ev.Count);  qev_* = $($qev.Count);  event_* = $($event.Count)"
-          if ($ev.Count -lt 40)  { Write-Error "only $($ev.Count) ev_* symbols - the archive is not what it should be"; exit 1 }
-          if ($qev.Count -gt 0)  { Write-Error "abandoned qev_* spelling is back: $($qev -join ' ')"; exit 1 }
-          if ($event.Count -gt 0){ Write-Error "unprefixed event_*, the libevent shim must stay OFF: $($event -join ' ')"; exit 1 }
+          if ($ev.Count -lt 40)   { Write-Error "only $($ev.Count) ev_* symbols - the archive is not what it should be"; exit 1 }
+          if ($qev.Count -gt 0)   { Write-Error "abandoned qev_* spelling is back: $($qev -join ' ')"; exit 1 }
+          if ($event.Count -gt 0) { Write-Error "unprefixed event_*, the libevent shim must stay OFF: $($event -join ' ')"; exit 1 }

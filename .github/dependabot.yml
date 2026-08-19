@@ -1,0 +1,12 @@
+# Keeps the pinned action SHAs current. Pinning without this is how a supply-chain measure turns
+# into a stale dependency: the pin stops the action changing under us, and Dependabot is what
+# still lets it move deliberately.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels: [ dependencies, ci ]

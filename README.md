@@ -1,10 +1,11 @@
 # qev
 
+[![ci](https://github.com/isndev/qev/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/isndev/qev/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/isndev/qev?sort=semver&color=brightgreen)](https://github.com/isndev/qev/releases/latest)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![version](https://img.shields.io/badge/version-5.0-brightgreen.svg)](CHANGELOG.md)
 ![C99](https://img.shields.io/badge/C-99-00599C.svg)
 ![platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20BSD%20%7C%20illumos-lightgrey.svg)
-![build](https://img.shields.io/badge/build-CMake%20%7C%20autotools-orange.svg)
+![build systems](https://img.shields.io/badge/build-CMake%20%7C%20autotools-orange.svg)
 
 **A high-performance event loop for C — libev's API, maintained.**
 
@@ -22,6 +23,8 @@ static void on_readable(struct ev_loop *loop, ev_io *w, int revents) {
 }
 
 int main(void) {
+    int sockfd = /* your already-connected socket */ 0;
+
     struct ev_loop *loop = ev_default_loop(0);   /* picks epoll / kqueue / event ports / wepoll */
     ev_io w;
     ev_io_init(&w, on_readable, sockfd, EV_READ);
@@ -155,7 +158,8 @@ ev::get_default_loop().run();
 ### Reference
 
 The complete API manual is [`docs/ev.pod`](docs/ev.pod) — libev's own, which applies
-verbatim. `make install` from the autotools build renders it as `qev.3`.
+verbatim. Either build renders it as `qev.3` and installs it under `man3`, provided
+`pod2man` is on the system.
 
 ## Choosing a backend at runtime
 

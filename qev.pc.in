@@ -5,7 +5,7 @@ libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 
 Name: qev
-Description: A modernized, cross-platform fork of libev (qev_* API, NOT drop-in)
+Description: A maintained, cross-platform continuation of libev - same ev_* C API, headers under <qev/>
 URL: https://github.com/isndev/qev
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lqev

@@ -30,7 +30,11 @@ jobs:
       matrix:
         cc: [gcc, clang]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this workflow pushes, so the checkout has no reason to leave a
+          # credential in .git/config for every later step to inherit.
+          persist-credentials: false
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -48,7 +52,11 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this workflow pushes, so the checkout has no reason to leave a
+          # credential in .git/config for every later step to inherit.
+          persist-credentials: false
       - name: Install autotools
         run: brew install autoconf automake libtool
       - name: Build matrix
@@ -61,7 +69,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing in this workflow pushes, so the checkout has no reason to leave a
+          # credential in .git/config for every later step to inherit.
+          persist-credentials: false
       - name: Configure (CMake, wepoll/epoll backend)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -114,3 +126,12 @@ jobs:
           if ($ev.Count -lt 40)   { Write-Error "only $($ev.Count) ev_* symbols - the archive is not what it should be"; exit 1 }
           if ($qev.Count -gt 0)   { Write-Error "abandoned qev_* spelling is back: $($qev -join ' ')"; exit 1 }
           if ($event.Count -gt 0) { Write-Error "unprefixed event_*, the libevent shim must stay OFF: $($event -join ' ')"; exit 1 }
+
+          # The census is the one invariant here that a reader might want to see without
+          # opening a log, so it is also written to the run summary.
+          $rows = "| symbol family | count | expected |", "|---|---|---|",
+                  "| ``ev_*`` | $($ev.Count) | >= 40 |",
+                  "| ``qev_*`` | $($qev.Count) | 0 |",
+                  "| unprefixed ``event_*`` | $($event.Count) | 0 |"
+          "### Exported-symbol census (MSVC)", "" + ($rows -join "`n") |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY

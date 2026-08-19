@@ -21,7 +21,9 @@ jobs:
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # SHARED, deliberately. A static release build produces no runtime artefact, so the
       # qev_Runtime component packages to an empty 29-byte tarball -- which is what the first run
       # of this workflow attached to the release page. A shared build makes both components mean
@@ -35,8 +37,6 @@ jobs:
       - name: Package
         working-directory: build
         run: cpack -G TGZ -C Release
-      # A release archive nobody opened is a release archive that might be empty. Unpack it and
-      # require the header and the library to be inside before it is allowed near a release page.
       # A release archive nobody opened is a release archive that might be empty. Unpack the
       # listing and require the header to be inside before it goes near a release page.
       #
@@ -73,7 +73,7 @@ jobs:
           done
           rm -f ./*.list
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: qev-${{ matrix.os }}
           path: build/*.tar.gz
@@ -84,7 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Package source
@@ -102,7 +104,7 @@ jobs:
           cmake -S "$d" -B /tmp/srcbuild -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/srcbuild -j2
           ctest --test-dir /tmp/srcbuild --output-on-failure
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: qev-source
           path: build/qev-*-Source.tar.gz
@@ -115,12 +117,49 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write   # the one job that writes, and only to attach assets to its own tag
+      contents: write       # the one job that writes, and only to attach assets to its own tag
+      id-token: write       # the OIDC token the provenance statement is signed with
+      attestations: write   # record that statement against the repository
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { path: dist, merge-multiple: true }
       - run: ls -la dist
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+
+      # Anyone can verify a download without installing anything. `gh attestation verify` below
+      # is stronger, but it needs the gh CLI and a network call; sha256sum needs neither.
+      - name: Checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          set -e
+          sha256sum ./*.tar.gz | sed 's| \./| |' > SHA256SUMS
+          cat SHA256SUMS
+
+      # The release body comes from CHANGELOG.md, rendered by a script that can be run -- and
+      # was run -- locally. Its failure modes are the ones a release actually has: a tag whose
+      # version has no section, and a section that is a heading somebody forgot to fill in.
+      - name: Release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          set -e
+          python3 scripts/release-notes.py "$GITHUB_REF_NAME" > RELEASE_NOTES.md
+          echo "::notice::release notes: $(wc -c < RELEASE_NOTES.md) bytes"
+          cat RELEASE_NOTES.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Signed provenance: what built these archives, from which commit, with which workflow.
+      # Verifiable with `gh attestation verify <file> --repo isndev/qev`.
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
-          files: dist/*.tar.gz
+          subject-path: dist/*.tar.gz
+
+      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
+          make_latest: true

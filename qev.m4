@@ -1,5 +1,6 @@
-dnl this file is part of libev, do not make local modifications
-dnl http://software.schmorp.de/pkg/libev
+dnl Derived from libev's libev.m4 (Marc Alexander Lehmann, BSD-2 -- see THIRD-PARTY-NOTICES).
+dnl Upstream: http://software.schmorp.de/pkg/libev
+dnl Feature detection only; it names no API symbol, so the ev_* -> qev_* rename does not reach it.
 
 dnl libev support
 AC_CHECK_HEADERS(sys/inotify.h sys/epoll.h sys/event.h port.h poll.h sys/timerfd.h)

@@ -9,7 +9,7 @@
  * ev_once. Each test drives a dedicated loop with a watchdog so a non-firing
  * watcher fails (instead of hanging). Exits non-zero if any check fails.
  */
-#include <ev.h>
+#include <qev/ev.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

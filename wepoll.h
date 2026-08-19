@@ -3,10 +3,10 @@
  * https://github.com/piscisaureus/wepoll
  *
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2011-2025 qb - isndev (cpp.actor).
+ * Copyright (c) 2011-2026 qb - isndev (cpp.actor).
  *
- * Part of qb-ev. Vendored from wepoll (epoll for Windows) by Bert Belder,
- * with multiple correctness and portability fixes for qb-ev.
+ * Part of qev. Vendored from wepoll (epoll for Windows) by Bert Belder,
+ * with multiple correctness and portability fixes for qev.
  *   Upstream: https://github.com/piscisaureus/wepoll
  *
  * Released under the MIT License (see LICENSE). Portions derived from wepoll
@@ -14,8 +14,8 @@
  * see THIRD-PARTY-NOTICES.
  */
 
-#ifndef WEPOLL_H_
-#define WEPOLL_H_
+#ifndef QB_EV_WEPOLL_H_
+#define QB_EV_WEPOLL_H_
 
 #ifndef WEPOLL_EXPORT
 #define WEPOLL_EXPORT
@@ -68,14 +68,12 @@ WEPOLL_EXPORT HANDLE epoll_create1(int flags);
 
 WEPOLL_EXPORT int epoll_close(HANDLE ephnd);
 
-WEPOLL_EXPORT int epoll_ctl(HANDLE ephnd, int op, SOCKET sock,
-                            struct epoll_event *event);
+WEPOLL_EXPORT int epoll_ctl(HANDLE ephnd, int op, SOCKET sock, struct epoll_event *event);
 
-WEPOLL_EXPORT int epoll_wait(HANDLE ephnd, struct epoll_event *events, int maxevents,
-                             int timeout);
+WEPOLL_EXPORT int epoll_wait(HANDLE ephnd, struct epoll_event *events, int maxevents, int timeout);
 
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
 
-#endif /* WEPOLL_H_ */
+#endif /* QB_EV_WEPOLL_H_ */

@@ -12,7 +12,7 @@
  *               (select/poll scan all N per wait; epoll/kqueue/io_uring/port
  *                report only the ready ones — the gap is why they exist)
  */
-#include <ev.h>
+#include <qev/ev.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

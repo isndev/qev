@@ -1,4 +1,4 @@
-<!-- Thanks for contributing to qb-ev! -->
+<!-- Thanks for contributing to qev! -->
 
 ## What & why
 

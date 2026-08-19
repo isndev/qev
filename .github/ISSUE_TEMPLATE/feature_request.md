@@ -1,16 +1,16 @@
 ---
 name: Feature request
-about: Suggest an idea for qb-ev
+about: Suggest an idea for qev
 title: "[feature] "
 labels: enhancement
 ---
 
 **Problem / motivation**
-What are you trying to do that qb-ev makes hard today?
+What are you trying to do that qev makes hard today?
 
 **Proposed solution**
-What you would like to see. Note any impact on the `ev_*` API/ABI (drop-in
-compatibility is a hard constraint).
+What you would like to see. Note any impact on the `ev_*` API or on struct layouts —
+consumers compiled against them, so a change there needs a version bump.
 
 **Alternatives considered**
 

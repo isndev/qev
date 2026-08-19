@@ -6,7 +6,7 @@
 #   scripts/test-build-matrix.sh gcc|clang   # inside an Ubuntu container (apt-install first)
 #
 # Exercises: CMake static + shared, autotools ./configure && make (libtool static
-# + shared), find_package(libev) consumer (static & shared), ASan/UBSan smoke,
+# + shared), find_package(qev) consumer (static & shared), ASan/UBSan smoke,
 # per-backend runtime probe, and the C++ (ev++.h) wrapper.
 #
 # Emits "RESULT|<cell>|<PASS|FAIL|SKIP>|<detail>" lines and a final summary.
@@ -43,7 +43,7 @@ cd "$WORK" || { echo "no workdir"; exit 0; }
 
 # ---- smoke sources --------------------------------------------------------
 cat > smoke.c <<'EOF'
-#include <ev.h>
+#include <qev/ev.h>
 #include <stdio.h>
 static int ticks=0;
 static void tcb(struct ev_loop*l, ev_timer*w, int r){ (void)w;(void)r; if(++ticks>=3) ev_break(l, EVBREAK_ALL); }
@@ -58,7 +58,7 @@ int main(void){
 }
 EOF
 cat > backend.c <<'EOF'
-#include <ev.h>
+#include <qev/ev.h>
 #include <stdio.h>
 #include <stdlib.h>
 int main(int argc,char**argv){
@@ -73,36 +73,135 @@ int main(int argc,char**argv){
 }
 EOF
 cat > smoke.cpp <<'EOF'
-#include <ev++.h>
+// Constructing a loop proves the header parses and the archive links. It proves nothing about
+// the watcher paths, and that gap is not hypothetical: `ev::io::set(int)` called ev_io_modify()
+// where that name was only a MACRO writing w->events in memory, never telling the backend, and
+// this cell watched it happen for two months without a word. So the wrapper is now DRIVEN --
+// arm a watcher, retarget it with set(int) while it is ACTIVE (the exact path that broke), and
+// require the callback to fire.
+#include <qev/ev++.h>
 #include <cstdio>
-int main(){ ev::default_loop loop; std::printf("cxx backend=0x%x ok\n", loop.backend()); return 0; }
+#include <cstdlib>
+
+#if defined(_WIN32)
+#  include <winsock2.h>
+#else
+#  include <unistd.h>
+#endif
+
+static int fired = 0;
+
+struct probe {
+    ev::io   io;
+    ev::timer bail;
+    int      wfd;
+
+    void on_io(ev::io &w, int revents) { fired = 1; w.stop(); bail.stop(); }
+    void on_bail(ev::timer &, int)     { std::puts("cxx FAIL: watcher never fired"); std::exit(3); }
+};
+
+int main() {
+    ev::default_loop loop;
+    std::printf("cxx backend=0x%x\n", loop.backend());
+
+    int fds[2];
+#if defined(_WIN32)
+    // Winsock has no pipe(), and wepoll only watches SOCKETs anyway -- which is the point on
+    // this platform. Build a connected loopback pair by hand.
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { std::puts("cxx FAIL: WSAStartup"); return 2; }
+    SOCKET lsn = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = 0;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int alen = static_cast<int>(sizeof a);
+    if (lsn == INVALID_SOCKET || bind(lsn, (sockaddr *) &a, alen) != 0 || listen(lsn, 1) != 0 ||
+        getsockname(lsn, (sockaddr *) &a, &alen) != 0) { std::puts("cxx FAIL: listen"); return 2; }
+    SOCKET cli = socket(AF_INET, SOCK_STREAM, 0);
+    if (cli == INVALID_SOCKET || connect(cli, (sockaddr *) &a, alen) != 0) { std::puts("cxx FAIL: connect"); return 2; }
+    SOCKET srv = accept(lsn, nullptr, nullptr);
+    if (srv == INVALID_SOCKET) { std::puts("cxx FAIL: accept"); return 2; }
+    closesocket(lsn);
+    fds[0] = static_cast<int>(srv);   // read end  (watched)
+    fds[1] = static_cast<int>(cli);   // write end (poked)
+#else
+    if (pipe(fds) != 0) { std::perror("pipe"); return 2; }
+#endif
+
+    probe p;
+    p.wfd = fds[1];
+
+    // Watch the WRITE end for READ: never ready, so nothing fires.
+    p.io.set<probe, &probe::on_io>(&p);
+    p.io.start(fds[1], ev::READ);
+
+    // Flush that registration all the way into the backend FIRST. Without this the retarget
+    // below is masked -- start() only MARKS the fd changed, and the pending fd_reify() would
+    // read the already-updated mask and register the right thing even with the defect present.
+    // Measured: the control planted the pre-e8090ecc body and this cell still passed until the
+    // pump was added, i.e. it was testing nothing.
+    loop.run(EVRUN_NOWAIT);
+
+    // Now retarget a watcher the backend has already registered. This is the path that broke:
+    // set(int) must tell the backend, not just rewrite w->events.
+    p.io.set(ev::WRITE);
+
+    p.bail.set<probe, &probe::on_bail>(&p);
+    p.bail.start(2.0);
+
+    loop.run();
+    if (!fired) { std::puts("cxx FAIL: loop returned without firing"); return 4; }
+    std::puts("cxx io::set(int) retarget ok");
+    return 0;
+}
 EOF
 
 # ---- ver check ------------------------------------------------------------
+# Six places carry this number by hand, and qb has been bitten three times by exactly that shape:
+# a version literal that stopped agreeing with its source and nothing looked. There is no single
+# source of truth to derive from here (autotools and CMake each want their own), so the next best
+# thing is to make disagreement loud.
 V=$(grep -m1 'EV_VERSION_MAJOR' ev.h | grep -o '[0-9]*')
-[ "$V" = 5 ] && res ev.h-version PASS "major=$V" || res ev.h-version FAIL "major=$V"
+Vm=$(grep -m1 'EV_VERSION_MINOR' ev.h | grep -o '[0-9]*')
+# NOT `grep 'VERSION [0-9]'` -- that matches cmake_minimum_required(VERSION 3.22) first and
+# yields an empty string, which then 'disagrees' with everything. The project() version is the
+# one on its own indented line.
+CMV=$(grep -m1 -E '^[[:space:]]*VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+ACV=$(grep -m1 'AC_INIT' configure.ac | grep -oE '\[[0-9]+\.[0-9]+\]' | tr -d '[]')
+LTV=$(grep -m1 'VERSION_INFO *=' Makefile.am | grep -oE '[0-9]+:[0-9]+:[0-9]+')
+CLV=$(grep -m1 '^## \[' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+RDV=$(grep -m1 -oE 'version-[0-9]+\.[0-9]+' README.md | cut -d- -f2)
+detail="ev.h=$V.$Vm cmake=$CMV autoconf=$ACV libtool=$LTV changelog=$CLV readme=$RDV"
+bad=""
+[ "$V" = 5 ] || bad="$bad ev.h-major"
+[ "$CMV" = "$V.$Vm.0" ] || bad="$bad cmake"
+[ "$ACV" = "$V.$Vm" ]   || bad="$bad autoconf"
+[ "$LTV" = "$V:$Vm:0" ] || bad="$bad libtool"
+[ "$CLV" = "$V.$Vm.0" ] || bad="$bad changelog"
+[ "$RDV" = "$V.$Vm" ]   || bad="$bad readme"
+[ -z "$bad" ] && res version-surface PASS "$detail" \
+               || res version-surface FAIL "disagree:$bad ($detail)"
 
 # ---- cell: cmake static ---------------------------------------------------
 if cmake -S . -B b-static -DCMAKE_BUILD_TYPE=Release >b-static-cfg.log 2>&1 \
-   && cmake --build b-static -j >b-static.log 2>&1 && ls b-static/libev.a >/dev/null 2>&1; then
+   && cmake --build b-static -j >b-static.log 2>&1 && ls b-static/libqev.a >/dev/null 2>&1; then
   W=$(grep -ci 'warning:' b-static.log)
-  [ "$W" = 0 ] && res cmake-static PASS "libev.a, 0 warn" || res cmake-static FAIL "$W warnings"
+  [ "$W" = 0 ] && res cmake-static PASS "libqev.a, 0 warn" || res cmake-static FAIL "$W warnings"
 else res cmake-static FAIL "build error: $(tail -3 b-static.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # ---- cell: cmake shared ---------------------------------------------------
 if cmake -S . -B b-shared -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON >b-shared-cfg.log 2>&1 \
    && cmake --build b-shared -j >b-shared.log 2>&1; then
-  SO=$(ls b-shared/libev.so* b-shared/libev*.dylib 2>/dev/null | head -1)
+  SO=$(ls b-shared/libqev.so* b-shared/libqev*.dylib 2>/dev/null | head -1)
   W=$(grep -ci 'warning:' b-shared.log)
   if [ -n "$SO" ] && [ "$W" = 0 ]; then res cmake-shared PASS "$(basename "$SO"), 0 warn"; else res cmake-shared FAIL "so='$SO' warn=$W"; fi
 else res cmake-shared FAIL "build error: $(tail -3 b-shared.log 2>/dev/null|tr '\n' ' ')"; fi
 
-# ---- cell: cmake install + find_package(libev) consumer (static) ----------
+# ---- cell: cmake install + find_package(qev) consumer (static) ------------
 cmake --install b-static --prefix "$WORK/pfx-st" >inst-st.log 2>&1
 mkdir -p consumer && cat > consumer/CMakeLists.txt <<'EOF'
 cmake_minimum_required(VERSION 3.22)
 project(c C)
-find_package(libev 5 REQUIRED)
+find_package(qev 5 REQUIRED)
 add_executable(c ../smoke.c)
 target_link_libraries(c PRIVATE qb::ev)
 EOF
@@ -122,12 +221,18 @@ else res findpackage-consumer-shared FAIL "$(tail -3 con-sh.log|tr '\n' ' ')"; f
 
 # ---- cell: autotools configure + make (libtool: static + shared) ----------
 if have autoreconf; then
-  if autoreconf --install --force >auto-recon.log 2>&1 && ./configure >auto-cfg.log 2>&1 && make -j >auto-make.log 2>&1; then
-    LA=$(ls libev.la 2>/dev/null); A=$(ls .libs/libev.a 2>/dev/null)
-    S=$(ls .libs/libev.so* .libs/libev*.dylib 2>/dev/null|head -1)   # .so on Linux, .dylib on macOS
+  if autoreconf --install --force >auto-recon.log 2>&1 && ./configure --prefix="$WORK/pfx-auto" >auto-cfg.log 2>&1 && make -j >auto-make.log 2>&1; then
+    LA=$(ls libqev.la 2>/dev/null); A=$(ls .libs/libqev.a 2>/dev/null)
+    S=$(ls .libs/libqev.so* .libs/libqev*.dylib 2>/dev/null|head -1)   # .so on Linux, .dylib on macOS
     res autotools-configure-make PASS "la=$([ -n "$LA" ]&&echo y) a=$([ -n "$A" ]&&echo y) so=$(basename "${S:-none}")"
-    if [ -n "$S" ] && $CC smoke.c -I. -L.libs -lev -o smoke_auto >auto-link.log 2>&1 \
-       && DYLD_LIBRARY_PATH=.libs LD_LIBRARY_PATH=.libs ./smoke_auto >auto-run.log 2>&1; then
+    # Compile against an INSTALLED autotools prefix rather than the build tree. The headers ship
+    # at $(includedir)/qev/ now -- never loose at the include root -- so the build tree cannot
+    # satisfy <qev/ev.h>, and testing the layout a packager actually gets is the better answer
+    # anyway. `make install` also exercises the qevinclude_HEADERS rule itself.
+    make install >auto-inst.log 2>&1
+    APFX="$WORK/pfx-auto"
+    if [ -n "$S" ] && $CC smoke.c -I"$APFX/include" -L"$APFX/lib" -lqev -o smoke_auto >auto-link.log 2>&1 \
+       && DYLD_LIBRARY_PATH="$APFX/lib" LD_LIBRARY_PATH="$APFX/lib" ./smoke_auto >auto-run.log 2>&1; then
       res autotools-shared-run PASS "$(head -1 auto-run.log)"
     else res autotools-shared-run FAIL "$(tail -2 auto-link.log auto-run.log 2>/dev/null|tr '\n' ' ')"; fi
   else res autotools-configure-make FAIL "$(grep -iE 'error|no such|cannot' auto-recon.log auto-cfg.log auto-make.log 2>/dev/null|head -3|tr '\n' ' ')"; fi
@@ -142,7 +247,9 @@ SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
 case "$($CC --version 2>&1)" in *clang*) SAN="$SAN -fno-sanitize=function";; esac
 if cmake -S . -B b-san -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="$SAN" >b-san-cfg.log 2>&1 \
    && cmake --build b-san -j >b-san.log 2>&1 \
-   && $CC $SAN smoke.c -I. -Ib-san b-san/libev.a -lm -o smoke_san >san-link.log 2>&1; then
+   && SANLIB=$(ls b-san/libqev*.a 2>/dev/null | head -1) \
+   && [ -n "$SANLIB" ] \
+   && $CC $SAN smoke.c -Ib-san/include -Ib-san "$SANLIB" -lm -o smoke_san >san-link.log 2>&1; then
   LEAK=0; [ "$(uname -s)" = Linux ] && LEAK=1   # detect_leaks unsupported on macOS ASan
   if ASAN_OPTIONS=detect_leaks=$LEAK UBSAN_OPTIONS=halt_on_error=1 ./smoke_san >san-run.log 2>&1; then
     res asan-ubsan-smoke PASS "$(grep -m1 ticks san-run.log)"
@@ -150,7 +257,7 @@ if cmake -S . -B b-san -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="$SAN" >b-san-cf
 else res asan-ubsan-smoke FAIL "build/link: $(tail -2 b-san.log san-link.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # ---- cell: per-backend smoke ---------------------------------------------
-if $CC backend.c -I. -Ib-static b-static/libev.a -lm -o backendtest >be-link.log 2>&1; then
+if $CC backend.c -Ib-static/include -Ib-static b-static/libqev.a -lm -o backendtest >be-link.log 2>&1; then
   detail=""; ok=1
   for be in 0x1:select 0x2:poll 0x4:epoll 0x8:kqueue 0x20:port 0x40:linuxaio 0x80:iouring; do
     code="${be%%:*}"; name="${be##*:}"
@@ -160,10 +267,57 @@ if $CC backend.c -I. -Ib-static b-static/libev.a -lm -o backendtest >be-link.log
   [ "$ok" = 1 ] && res per-backend-smoke PASS "$detail" || res per-backend-smoke FAIL "$detail"
 else res per-backend-smoke FAIL "link: $(tail -2 be-link.log|tr '\n' ' ')"; fi
 
-# ---- cell: C++ ev++.h smoke ----------------------------------------------
-if $CXX smoke.cpp -I. -Ib-static b-static/libev.a -lm -o smoke_cxx >cxx-link.log 2>&1 && ./smoke_cxx >cxx-run.log 2>&1; then
-  res cxx-evpp-smoke PASS "$(head -1 cxx-run.log)"
-else res cxx-evpp-smoke FAIL "$(tail -2 cxx-link.log cxx-run.log 2>/dev/null|tr '\n' ' ')"; fi
+# ---- cell: C++ ev++.h wrapper --------------------------------------------
+if $CXX smoke.cpp -Ib-static/include -Ib-static b-static/libqev.a -lm -o smoke_cxx >cxx-link.log 2>&1 && ./smoke_cxx >cxx-run.log 2>&1; then
+  res cxx-qevpp-drive PASS "$(tail -1 cxx-run.log)"
+else res cxx-qevpp-drive FAIL "$(tail -2 cxx-link.log cxx-run.log 2>/dev/null|tr '\n' ' ')"; fi
+
+# ---- cell: shared-prefix install ------------------------------------------
+# qb embeds this loop and installs it too, so both products can land in one prefix. They must not
+# share a single path, and the reason is not tidiness: qb compiles the REDUCED watcher profile and
+# the standalone compiles all fourteen, so `ev_config.h` differs and with it the layout of
+# `struct ev_loop` (1224 bytes against 1520). Same-named files with different content is exactly
+# the collision this fork exists to close. Measured here rather than trusted:
+#   qb           -> lib/libqb-ev.a  + include/qb/ev/
+#   standalone   -> lib/libqev.a    + include/qev/  + lib/cmake/qev/ + lib/pkgconfig/qev.pc
+PFXQ="$WORK/pfx-shared"
+cmake --install b-static --prefix "$PFXQ" >shared-inst.log 2>&1
+# stand in for a qb install: the same two paths qb would write
+mkdir -p "$PFXQ/include/qb/ev" "$PFXQ/lib"
+: > "$PFXQ/lib/libqb-ev.a"; : > "$PFXQ/include/qb/ev/ev.h"
+CLASH=""
+for p in lib/libqev.a include/qev/ev.h include/qev/ev_config.h; do
+  [ -s "$PFXQ/$p" ] || CLASH="$CLASH $p(missing-or-emptied)"
+done
+[ -s "$PFXQ/lib/libqb-ev.a" ] && CLASH="$CLASH libqb-ev.a(overwritten-by-standalone)"
+[ -s "$PFXQ/include/qb/ev/ev.h" ] && CLASH="$CLASH qb/ev/ev.h(overwritten-by-standalone)"
+if [ -z "$CLASH" ]; then
+  res shared-prefix-install PASS "libqev.a + include/qev/ coexist with qb's libqb-ev.a + include/qb/ev/"
+else res shared-prefix-install FAIL "path(s) collide:$CLASH"; fi
+
+# ---- cell: exported-symbol census -----------------------------------------
+# The invariant, and it needs an ARCHIVE so it cannot live in a source-level guard.
+#   * ev_*      EXPECTED. The fork keeps libev's own API names so a migrating consumer's sources
+#               compile unchanged; only the header PATH and the artefact name are ours.
+#   * qev_*     FORBIDDEN. That spelling was tried and abandoned; source says ev, artefact says qev,
+#               and one file carrying both is how this tree lost three days.
+#   * event_*   FORBIDDEN unless QB_EV_LIBEVENT_COMPAT is ON. Those 24 unprefixed names collide with
+#               a real libevent, which is far more widely deployed than libev, and the two declare
+#               the same names over incompatible struct layouts.
+if command -v nm >/dev/null 2>&1 && [ -f b-static/libqev.a ]; then
+  SYMS=$(nm -g b-static/libqev.a 2>/dev/null | grep -E ' [TDS] ' | awk '{print $3}' | sed 's/^_//' | sort -u)
+  NEV=$(printf '%s\n' "$SYMS" | grep -c '^ev_' || true)
+  NQEV=$(printf '%s\n' "$SYMS" | grep -c '^qev_' || true)
+  NEVT=$(printf '%s\n' "$SYMS" | grep -c '^event' || true)
+  OTHER=$(printf '%s\n' "$SYMS" | grep -vE '^ev_|^event|^$' || true)
+  NO=$(printf '%s' "$OTHER" | grep -c . || true)
+  if   [ "$NEV" -lt 40 ]; then res symbol-census FAIL "only $NEV ev_* symbols — the archive is not what it should be"
+  elif [ "$NQEV" -ne 0 ]; then res symbol-census FAIL "$NQEV qev_* symbol(s) — the abandoned spelling is back"
+  elif [ "$NEVT" -ne 0 ]; then res symbol-census FAIL "$NEVT unprefixed event_* — the libevent shim must stay OFF"
+  elif [ "$NO"  -ne 0 ]; then res symbol-census FAIL "$NO symbol(s) outside ev_*: $(printf '%s' "$OTHER" | tr '\n' ' ' | cut -c1-120)"
+  else res symbol-census PASS "$NEV ev_*, 0 qev_*, 0 unprefixed event_*"
+  fi
+else res symbol-census SKIP "no nm, or no static archive"; fi
 
 echo "== SUMMARY mode=$MODE: PASS=$PASS FAIL=$FAIL SKIP=$SKIP =="
 if [ "${STRICT:-0}" = 1 ] && [ "$FAIL" -gt 0 ]; then exit 1; fi

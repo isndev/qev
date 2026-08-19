@@ -1,7 +1,7 @@
-qb-ev — Third-Party Notices
-===========================
+qev — Third-Party Notices
+=========================
 
-qb-ev (MIT, see LICENSE) is a modernized fork of libev and bundles a patched
+qev (MIT, see LICENSE) is a modernized fork of libev and bundles a patched
 copy of wepoll. The original components below remain under the BSD-2-Clause
 license of their respective authors, and the relevant source files retain those
 authors' copyright notices.

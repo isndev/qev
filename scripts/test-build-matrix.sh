@@ -226,7 +226,11 @@ else res findpackage-consumer-shared FAIL "$(tail -3 con-sh.log|tr '\n' ' ')"; f
 
 # ---- cell: autotools configure + make (libtool: static + shared) ----------
 if have autoreconf; then
-  if autoreconf --install --force >auto-recon.log 2>&1 && ./configure --prefix="$WORK/pfx-auto" >auto-cfg.log 2>&1 && make -j >auto-make.log 2>&1; then
+  # ./autogen.sh, not `autoreconf` directly: that is the entry point README and CONTRIBUTING
+  # both document, and running the equivalent by hand meant the documented path was never
+  # exercised. It was committed mode 644, so `./autogen.sh` answered "permission denied" for
+  # anyone who followed the instructions, and every green run here went straight past it.
+  if ./autogen.sh >auto-recon.log 2>&1 && ./configure --prefix="$WORK/pfx-auto" >auto-cfg.log 2>&1 && make -j >auto-make.log 2>&1; then
     LA=$(ls libqev.la 2>/dev/null); A=$(ls .libs/libqev.a 2>/dev/null)
     S=$(ls .libs/libqev.so* .libs/libqev*.dylib 2>/dev/null|head -1)   # .so on Linux, .dylib on macOS
     res autotools-configure-make PASS "la=$([ -n "$LA" ]&&echo y) a=$([ -n "$A" ]&&echo y) so=$(basename "${S:-none}")"

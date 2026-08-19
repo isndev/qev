@@ -35,34 +35,57 @@ jobs:
           # Nothing in this workflow pushes, so the checkout has no reason to leave a
           # credential in .git/config for every later step to inherit.
           persist-credentials: false
-      # `apt-get update` with no retry is a single point of failure on a hosted runner: one slow
-      # mirror spends the entire job budget here and the run goes red for a reason that has
-      # nothing to do with the code. Measured on this workflow: 20 minutes in this step, timing
-      # the job out before a line was compiled, while the same commit was green on the three
-      # other platforms. Retried with backoff, and the install itself is retried too, because a
-      # mirror that is slow for one is usually slow for both.
+      # apt on a hosted runner, bounded three ways.
+      #
+      # Measured twice on this workflow, and the first diagnosis was wrong. The step produced
+      # ZERO output between the command echo and the cancellation twenty minutes later -- not one
+      # `Hit:` or `Get:` line -- so it was never fetching: it was waiting on the dpkg/apt lock
+      # that unattended-upgrades holds while a fresh runner settles, which apt waits for FOREVER
+      # by default. Acquire::http::Timeout, which was the first fix, bounds network fetches and
+      # so changed nothing; the second run timed out at 20m11s exactly like the first.
+      #
+      # So: DPkg::Lock::Timeout makes apt give up on the lock instead of waiting, `timeout` caps
+      # the call whatever the reason it hangs, and the retry loop gets a turn because the two
+      # above guarantee there IS one. The cheapest guard is first, though -- if every tool is
+      # already on the image, which is the usual case, apt is never invoked at all.
       - name: Install toolchain
         run: |
           set -e
-          retry() {
+          cc_pkgs='${{ matrix.cc == 'gcc' && 'gcc g++' || 'clang' }}'
+          cc_probe='${{ matrix.cc == 'gcc' && 'gcc g++' || 'clang' }}'
+
+          missing=""
+          for c in cmake make pkg-config autoreconf automake libtoolize m4 perl $cc_probe; do
+            command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+          done
+
+          if [ -z "$missing" ]; then
+            echo "toolchain already present on the image; not touching apt"
+          else
+            echo "missing:$missing"
+            # `sudo timeout`, not `timeout sudo`: the latter signals sudo, which need not pass
+            # it on to the apt-get it spawned -- the call would look bounded and not be.
+            APT="sudo timeout 300 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3"
             for attempt in 1 2 3; do
-              "$@" && return 0
-              echo "::warning::'$*' failed (attempt $attempt/3); retrying"
+              if $APT update -qq; then break; fi
+              [ "$attempt" = 3 ] && { echo "::error::apt-get update failed three times"; exit 1; }
+              echo "::warning::apt-get update failed or timed out (attempt $attempt/3); retrying"
               sleep $((attempt * 15))
             done
-            echo "::error::'$*' failed three times"
-            return 1
-          }
-          # The timeouts matter more than the retry does. `apt-get update` has no timeout of its
-          # own: against an unresponsive mirror it simply waits, so a retry loop around it never
-          # gets a turn -- which is exactly what was measured, one attempt sitting for 20 minutes
-          # until the job budget ran out. Acquire::http::Timeout bounds each attempt so the loop
-          # can do its job.
-          APT_OPTS="-o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=3"
-          retry sudo apt-get $APT_OPTS update -qq
-          retry sudo apt-get $APT_OPTS install -y --no-install-recommends \
-            cmake make pkg-config autoconf automake libtool m4 perl \
-            ${{ matrix.cc == 'gcc' && 'gcc g++' || 'clang' }}
+            for attempt in 1 2 3; do
+              if sudo timeout 420 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 \
+                   install -y --no-install-recommends \
+                   cmake make pkg-config autoconf automake libtool m4 perl $cc_pkgs; then break; fi
+              [ "$attempt" = 3 ] && { echo "::error::apt-get install failed three times"; exit 1; }
+              echo "::warning::apt-get install failed or timed out (attempt $attempt/3); retrying"
+              sleep $((attempt * 15))
+            done
+          fi
+
+          for c in cmake make autoreconf $cc_probe; do
+            command -v "$c" >/dev/null || { echo "::error::$c still missing after install"; exit 1; }
+          done
+
       - name: Build matrix (CMake static/shared · autotools · sanitizers · backends · census)
         env:
           STRICT: 1

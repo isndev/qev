@@ -6,9 +6,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
-Nothing yet. Entries land here as they are merged, and move under a version heading when
-that version is tagged — `CONTRIBUTING.md` asks for one per change, so this section has to
-exist for that instruction to mean anything.
+### Added
+
+- **A wepoll test suite** (`tests/test-wepoll.c`, Windows-only by registration): the fork's
+  headline feature had no dedicated test. Five cases over native winsock SOCKETs, including
+  the regression test for the interest-set-modification bug that motivated the fork — a live
+  watcher widened to `READ|WRITE` whose re-registration never reached the backend.
+- **A loop-mechanics suite** (`tests/test-loops.c`, every platform): multi-loop isolation,
+  timer ordering and pacing, `ev_timer_again`, priority-ordered invocation, the README's
+  "NULL if unavailable" backend promise, `ev_now`/`ev_iteration` bookkeeping, `ev_feed_event`,
+  a real `fork()` + `ev_loop_fork`, a cross-thread `ev_async_send`, and a thousand concurrent
+  timers. Both suites carry the same anti-vacuity floor as the watcher suite: a run below its
+  unconditional check count fails instead of reading as a pass.
 
 ## [5.0.0] — 2026-08-19
 

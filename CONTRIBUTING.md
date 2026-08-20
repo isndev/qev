@@ -46,7 +46,7 @@ improvement here reaches qb on its next sync.
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # add -DBUILD_SHARED_LIBS=ON for a shared lib
 cmake --build build
-ctest --test-dir build --output-on-failure       # watcher coverage
+ctest --test-dir build --output-on-failure       # watcher + loop coverage (+ wepoll on Windows)
 ./build/qev-bench-backends                       # backend benchmark
 ```
 

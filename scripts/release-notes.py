@@ -23,7 +23,7 @@ MIN_BODY = 200  # a section shorter than this is a heading somebody forgot to fi
 
 
 def render(version: str, changelog: pathlib.Path, repo: str) -> str:
-    text = changelog.read_text()
+    text = changelog.read_text(encoding="utf-8")
     match = re.search(r"^## \[" + re.escape(version) + r"\].*?$(.*?)(?=^## \[|\Z)",
                       text, re.S | re.M)
     if match is None:

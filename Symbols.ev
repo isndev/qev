@@ -1,3 +1,4 @@
+ev_active_count
 ev_async_send
 ev_async_start
 ev_async_stop

@@ -161,6 +161,27 @@ static void test_iteration_count(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- ev_active_count follows start / unref / stop / one-shot expiry ---- */
+static void test_active_count(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    OK(ev_active_count(l) == 0 && ev_pending_count(l) == 0, "fresh loop: no active, no pending watcher");
+    ev_timer a, b;
+    ev_timer_init(&a, stop_cb, 3600.0, 0.0); ev_timer_start(l, &a);
+    ev_timer_init(&b, stop_cb, 0.001, 0.0);  ev_timer_start(l, &b);
+    OK(ev_active_count(l) == 2, "two started timers: ev_active_count == 2");
+    ev_unref(l);
+    OK(ev_active_count(l) == 1, "ev_unref lowers it: an unreferenced watcher does not keep the loop alive");
+    ev_ref(l);
+    ev_run(l, 0);                         /* b (1 ms, one-shot) fires, auto-stops and breaks the loop */
+    OK(ev_active_count(l) == 1, "a one-shot timer that fired is no longer active");
+    ev_timer_stop(l, &a);
+    OK(ev_active_count(l) == 0, "stopping the last watcher brings it back to 0");
+    ev_feed_event(l, &a, EV_CUSTOM);      /* pending on an INACTIVE watcher is still pending */
+    OK(ev_pending_count(l) == 1 && ev_active_count(l) == 0, "a fed event on a stopped watcher is pending, not active");
+    ev_clear_pending(l, &a);
+    ev_loop_destroy(l);
+}
+
 /* ---- ev_feed_event delivers without any real readiness ---- */
 static int fed;
 static void fed_cb(struct ev_loop *l, ev_timer *w, int r) {
@@ -290,6 +311,7 @@ int main(void) {
     test_backend_unavailable();
     test_now_update();
     test_iteration_count();
+    test_active_count();
     test_feed_event();
     test_stop_inactive();
     test_many_timers();

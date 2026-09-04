@@ -1175,6 +1175,15 @@ thread executes within C<ev_invoke_pending> or C<ev_run> of course).
 Returns the number of pending watchers - zero indicates that no watchers
 are pending.
 
+=item int ev_active_count (loop)
+
+Returns the number of referenced active watchers - the count that keeps
+C<ev_run> looping (an C<ev_unref>'d watcher is not counted). Together with
+C<ev_pending_count> it lets an embedder that drives the loop with
+C<EVRUN_NOWAIT> from its own scheduler skip a run that could do nothing:
+when both are zero there is no watcher to fire and no event queued, so the
+backend poll would only cost its syscall.
+
 =item ev_set_invoke_pending_cb (loop, void (*invoke_pending_cb)(EV_P))
 
 This overrides the invoke pending functionality of the loop: Instead of

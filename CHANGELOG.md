@@ -8,6 +8,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Added
 
+- **`ev_active_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::active_count()` and
+  `loop_ref::pending_count()` in `ev++.h`): the number of *referenced* active watchers — the
+  quantity `ev_run` itself consults to decide whether it keeps looping. It exists for embedders
+  that drive the loop with `EVRUN_NOWAIT` from their own scheduler and need to know, before
+  paying for a backend poll and two clock reads, whether the loop has anything at all to do:
+  `ev_run(EVRUN_NOWAIT)` polls unconditionally, even over an empty loop, and a hot loop calling
+  it once per pass measures that cost on every pass. Watchers that were `ev_unref`'d are not
+  counted, by design (they do not keep the loop alive either); pending events are reported
+  separately by `ev_pending_count`. Covered by `tests/test-loops.c`.
 - **A wepoll test suite** (`tests/test-wepoll.c`, Windows-only by registration): the fork's
   headline feature had no dedicated test. Five cases over native winsock SOCKETs, including
   the regression test for the interest-set-modification bug that motivated the fork — a live

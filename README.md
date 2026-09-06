@@ -210,7 +210,7 @@ cmake --install build --prefix /usr/local
 | `BUILD_TESTING`            | `ON`    | Standard CMake switch; gates the test target.         |
 | `QB_EV_STRICT_WARNINGS`    | `ON`    | Strict GCC/Clang warning set.                         |
 | `QB_EV_USE_TIMERFD`        | `ON`    | Linux `timerfd` for time-jump detection.              |
-| `QB_EV_WATCHERS_FULL`      | `ON`\*  | All fourteen watcher families.                        |
+| `QB_EV_WATCHERS_FULL`      | `ON`\*  | All fourteen watcher families (`OFF` keeps `async`).  |
 | `QB_EV_LIBEVENT_COMPAT`    | `OFF`   | Build the libevent shim — see [below](#coexisting-with-libev). |
 | `QB_EV_BUILD_BENCHMARKS`   | `ON`\*  | Cross-backend benchmark.                              |
 | `BUILD_PIC_STATIC_LIBS`    | `ON`    | Position-independent static archive.                  |

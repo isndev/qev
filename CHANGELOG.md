@@ -6,6 +6,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **The reduced watcher profile keeps `async`.** `QB_EV_WATCHERS_FULL=OFF` used to compile out
+  seven families; it now compiles out six — idle, prepare, check, fork, child, embed — and
+  leaves `ev_async_start/stop/send` in. An embedder that parks a thread inside `ev_run` needs
+  one entry point another thread may call against that concurrent `ev_run`, and `ev_async_send`
+  is the only one libev offers; qb 3.2's `VirtualCore` is that embedder. Cost, measured on
+  Linux/x86-64: three exported symbols and 24 bytes of `struct ev_loop` (61 `ev_*` / 496 bytes
+  against the full profile's 74 / 592).
+
 ### Added
 
 - **`ev_active_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::active_count()` and

@@ -18,6 +18,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Added
 
+- **`ev_active_count_addr(loop)` / `ev_pending_count_addr(loop)` and `EV_NUMPRI`** (`EV_FEATURE_API`,
+  plus `loop_ref::active_count_addr()` / `pending_count_addr()` in `ev++.h`): read-only aliases of
+  the two counters `ev_active_count` and `ev_pending_count` report, pointing into the loop and
+  valid until `ev_loop_destroy`. They exist for the same embedder as `ev_active_count`: a scheduler
+  that gates every `EVRUN_NOWAIT` pass on "is there anything to do" was paying two out-of-line
+  calls and a loop over the priorities on every pass — measured at ~10 % of a one-event pass in
+  qb 3.2's core once nothing else in that pass read a clock — where six inline loads answer the
+  same question. `*ev_active_count_addr` is the raw referenced-active count (it reads −1 between
+  an `ev_unref` and the start it pairs with; test it with `> 0`), and `ev_pending_count_addr` has
+  `EV_NUMPRI` entries — one per priority level, the constant is now public — whose sum is
+  `ev_pending_count`. Owner thread only, like any other read of the loop. Covered by
+  `tests/test-loops.c` (`test_count_addr`, six checks; the suite's unconditional floor rises
+  10 → 16 with them).
 - **`ev_active_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::active_count()` and
   `loop_ref::pending_count()` in `ev++.h`): the number of *referenced* active watchers — the
   quantity `ev_run` itself consults to decide whether it keeps looping. It exists for embedders

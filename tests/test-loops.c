@@ -182,6 +182,31 @@ static void test_active_count(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- ev_active_count_addr / ev_pending_count_addr alias the counters for the loop's life ---- */
+static void test_count_addr(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    const int *active  = ev_active_count_addr(l);
+    const int *pending = ev_pending_count_addr(l);
+    int pri, sum;
+    OK(active && pending && *active == 0, "fresh loop: both addresses are valid and active reads 0");
+    ev_timer a, b;
+    ev_timer_init(&a, stop_cb, 3600.0, 0.0); ev_timer_start(l, &a);
+    ev_timer_init(&b, stop_cb, 3600.0, 0.0); ev_timer_start(l, &b);
+    OK(*active == 2 && (unsigned) *active == ev_active_count(l), "two started timers: *active == 2 == ev_active_count");
+    ev_feed_event(l, &a, EV_CUSTOM);
+    for (sum = 0, pri = 0; pri < EV_NUMPRI; ++pri) sum += pending[pri];
+    OK(sum == 1 && (unsigned) sum == ev_pending_count(l), "a fed event: the EV_NUMPRI entries sum to ev_pending_count == 1");
+    ev_run(l, EVRUN_NOWAIT);              /* delivers it (stop_cb breaks); the addresses survive the run */
+    for (sum = 0, pri = 0; pri < EV_NUMPRI; ++pri) sum += pending[pri];
+    OK(sum == 0 && *active == 2, "after the run: nothing pending, both timers still active, same addresses");
+    ev_timer_stop(l, &a); ev_timer_stop(l, &b);
+    ev_unref(l);
+    OK(*active == -1 && ev_active_count(l) == 0, "an unpaired ev_unref reads -1 raw where ev_active_count clamps to 0");
+    ev_ref(l);
+    OK(*active == 0, "ev_ref restores 0");
+    ev_loop_destroy(l);
+}
+
 /* ---- ev_feed_event delivers without any real readiness ---- */
 static int fed;
 static void fed_cb(struct ev_loop *l, ev_timer *w, int r) {
@@ -312,6 +337,7 @@ int main(void) {
     test_now_update();
     test_iteration_count();
     test_active_count();
+    test_count_addr();
     test_feed_event();
     test_stop_inactive();
     test_many_timers();
@@ -320,12 +346,12 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Ten checks are unconditional in every profile on every platform (only the
+    /* Sixteen checks are unconditional in every profile on every platform (only the
        cross-thread async and the fork case can legitimately skip, and the backend
        probe skips only where every backend exists, which no platform has). A run
        below that floor measured nothing and must not read as a pass. */
-    if (g_run < 10) {
-        printf("== FAIL: only %d checks ran; at least 10 are unconditional ==\n", g_run);
+    if (g_run < 16) {
+        printf("== FAIL: only %d checks ran; at least 16 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

@@ -1,4 +1,5 @@
 ev_active_count
+ev_active_count_addr
 ev_async_send
 ev_async_start
 ev_async_stop
@@ -39,6 +40,7 @@ ev_now
 ev_now_update
 ev_once
 ev_pending_count
+ev_pending_count_addr
 ev_periodic_again
 ev_periodic_start
 ev_periodic_stop

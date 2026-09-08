@@ -762,6 +762,75 @@ static void test_async_two_senders(void) {
 }
 #endif
 
+#ifdef __linux__
+/* ---- io_uring: non-blocking passes over a quiet fd make no syscall storm (QB-81) ----
+   The backend armed its timerfd at "now" on every timeout-0 poll: it expired at once, its one-shot
+   POLL_ADD completed, the drain reset the deadline, the POLL_ADD was re-armed through io_uring_enter,
+   and the next pass armed "now" again -- three syscalls per cycle, the quiet-socket pass measured
+   at 47x epoll's whatever qb's poll cadence. The mechanism is not reachable from the API, so the
+   witness is the ratio a user sees: N NOWAIT passes over one quiet pipe end on an io_uring loop
+   against the same on an epoll loop, back to back in this process (host speed and a sanitizer's
+   slow-down cancel out: the storm measured ~10x under TSan, the fix ~0.3x). Each side is the better
+   of two alternated runs, so one descheduling cannot fail it. The fd never fires: its callback
+   counts rather than aborts, and that count is asserted. */
+#define QP_PASSES 200000
+static int qp_fired;
+static void qp_quiet_cb(struct ev_loop *l, ev_io *w, int r) { (void)l; (void)w; (void)r; ++qp_fired; }
+static double qp_nowait_seconds(unsigned int backend, int *ok) {
+    struct ev_loop *l = ev_loop_new(backend);
+    int fds[2], i; ev_io w; ev_tstamp t0, t1;
+    *ok = 0;
+    if (!l) return 0.;
+    if (pipe(fds) != 0) { ev_loop_destroy(l); return 0.; }
+    ev_io_init(&w, qp_quiet_cb, fds[0], EV_READ); ev_io_start(l, &w);
+    ev_run(l, EVRUN_NOWAIT);                        /* the one real registration with the backend */
+    t0 = ev_time();
+    for (i = 0; i < QP_PASSES; ++i) ev_run(l, EVRUN_NOWAIT);
+    t1 = ev_time();
+    ev_io_stop(l, &w); close(fds[0]); close(fds[1]); ev_loop_destroy(l);
+    *ok = 1;
+    return t1 - t0;
+}
+static void test_iouring_quiet_nowait(void) {
+    const char *name = "io_uring: N non-blocking passes over a quiet fd cost no more than 2x epoll's (the timerfd re-armed at now on every pass made it 47x -- QB-81)";
+    double u1, e1, u2, e2, u, e; int oku = 0, oke = 0;
+    if (!(ev_supported_backends() & EVBACKEND_IOURING)) { SKIP(name, "io_uring not compiled in"); return; }
+    if (!(ev_supported_backends() & EVBACKEND_EPOLL))   { SKIP(name, "no epoll to compare against"); return; }
+    qp_fired = 0;
+    u1 = qp_nowait_seconds(EVBACKEND_IOURING, &oku);
+    if (!oku) { SKIP(name, "io_uring unavailable at runtime (ev_loop_new returned NULL)"); return; }
+    e1 = qp_nowait_seconds(EVBACKEND_EPOLL, &oke);
+    u2 = qp_nowait_seconds(EVBACKEND_IOURING, &oku);
+    e2 = qp_nowait_seconds(EVBACKEND_EPOLL, &oke);
+    if (!oke || !oku) { SKIP(name, "a loop or pipe could not be created"); return; }
+    u = u1 < u2 ? u1 : u2; e = e1 < e2 ? e1 : e2;
+    printf("        io_uring %.1f ms, epoll %.1f ms for %d quiet NOWAIT passes each (ratio %.2f), fd fired %d times\n",
+           u * 1e3, e * 1e3, QP_PASSES, e > 0. ? u / e : 0., qp_fired);
+    OK(qp_fired == 0 && e > 0. && u <= 2.0 * e, name);
+}
+
+/* ---- io_uring: a BLOCKING wait still honours its timer deadline (the positive control of QB-81) ----
+   The fix arms the timerfd only when the poll will sleep; this proves the sleeping path still does:
+   an io_uring loop holding one 20 ms timer, run blocking, must return in about 20 ms -- neither at
+   once (a deadline never armed would wake on nothing... or hang) nor much later. */
+static void test_iouring_blocking_timer(void) {
+    const char *name = "io_uring: a blocking run over a 20 ms timer returns in 15..500 ms (the timerfd is still armed for a real sleep -- QB-81)";
+    struct ev_loop *l; ev_timer t; ev_tstamp t0, dt;
+    if (!(ev_supported_backends() & EVBACKEND_IOURING)) { SKIP(name, "io_uring not compiled in"); return; }
+    l = ev_loop_new(EVBACKEND_IOURING);
+    if (!l) { SKIP(name, "io_uring unavailable at runtime"); return; }
+    tick_fired = 0;
+    ev_timer_init(&t, tick_cb, 0.020, 0.0); ev_timer_start(l, &t);
+    t0 = ev_time();
+    ev_run(l, 0);
+    dt = ev_time() - t0;
+    ev_timer_stop(l, &t);
+    printf("        blocking run over a 20 ms timer under io_uring returned after %.1f ms\n", dt * 1e3);
+    OK(tick_fired == 1 && dt >= 0.015 && dt <= 0.5, name);
+    ev_loop_destroy(l);
+}
+#endif
+
 /* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
 /* On Windows libev read both its clocks from GetSystemTimeAsFileTime, the system tick -- 1 to
  * 15.6 ms steps -- and judged every timer against it; qev reads QueryPerformanceCounter. A
@@ -854,6 +923,10 @@ int main(void) {
 # else
     SKIP("two concurrent async senders", "async watchers compiled out");
 # endif
+#endif
+#ifdef __linux__
+    test_iouring_quiet_nowait();
+    test_iouring_blocking_timer();
 #endif
     test_real_fork();
 

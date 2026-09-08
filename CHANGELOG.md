@@ -45,7 +45,40 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   unconditional floor rises 20 → 32 with the clock case below). Each of the two mechanisms
   was disabled in turn and the suite rejected both (7 and 3 checks).
 
+### Added
+
+- **`EVRUN_NOPOLL`, `ev_io_count_addr(loop)` and `ev_io_fed_addr(loop)` (Huly QB-191):** the
+  embedder owns the io cadence. A non-blocking pass with the flag reifies timers and periodics
+  and invokes every pending event exactly as before and only leaves the backend call out; a pass
+  that would block ignores it (with a descriptor to wait on, the poll is the wake). The two
+  addresses are the per-pass inputs of a cadence, read inline: how many descriptors a poll would
+  look at, and how many ready ones the last polls reported (`iofed`, one per `fd_event`; it
+  grows and wraps), so an embedder polls on every pass while a descriptor is busy and backs off
+  while it is quiet. qb 3.2's cores poll a quiet socket once per microsecond instead of once per
+  pass — the poll was the whole of what an io pass cost over a timers-only one (101 vs 22 ns on
+  WSL2, `bench-pass`'s `fd` shape). `tests/test-loops.c` (`test_nopoll`): an expired timer and a
+  fed event under the flag, a readable fd NOT delivered under it and delivered by the next plain
+  pass, a blocking pass ignoring it, and the fed count moving only when a poll found the fd
+  (unconditional floor 32 → 35). Exports: 80 `ev_*` on POSIX, 79 on Windows.
+
 ### Fixed
+
+- **The wepoll suite measured nothing: its five cases passed on `fd_kill`'s `EV_ERROR`, never
+  through wepoll (Huly QB-194).** `tests/test-wepoll.c` wrote `ev_io_init(&w, cb, (int)sock,
+  EV_READ)` — a raw winsock `SOCKET` as the fd, registered nowhere in the `SOCKET ↔ fd`
+  registry — so `ev_io_start` resolved it to `INVALID_SOCKET`, wepoll's `EPOLL_CTL_ADD` failed,
+  `fd_kill` stopped the watcher and fed it `EV_ERROR | EV_READ | EV_WRITE`, and callbacks that
+  never looked at `revents` took the kill for a delivery (`recv()` on the raw value still
+  worked: the kill leaves the socket itself intact). Measured on MSVC 19.51: `revents`
+  0x80000003 in every case, the loop's io count 0 after the pass, the backend never consulted —
+  including case 2, the `e8090ecc` regression the fork exists for. The sockets go through
+  `ev_io_init_sock` / `ev_io_set_sock` now and callbacks read `w->handle`; every verdict
+  requires `EV_ERROR` absent (a kill is a failure, never a delivery), case 1 also asserts the
+  watcher is still active afterwards, case 2 covers both `ev_io_modify` in place and the
+  stop / set / start cycle, and the unconditional floor is 5 → 13 with the new `EVRUN_NOPOLL`
+  case (QB-191). Replanting the raw-`SOCKET` form is rejected (3 FAIL); the corrected suite
+  13/13 ×10. Exposed by that sixth case, which asks whether a pass LOOKED and so counts what
+  wepoll fed.
 
 - **Windows: the loop's clocks are `QueryPerformanceCounter` and
   `GetSystemTimePreciseAsFileTime`, not the system tick (Huly QB-193).** `ev_win32.c` read

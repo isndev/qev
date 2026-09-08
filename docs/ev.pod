@@ -1002,6 +1002,17 @@ be an event internal to libev itself, so there is no guarantee that a
 user-registered callback will be called), and will return after one
 iteration of the loop.
 
+C<EVRUN_NOPOLL> (qev), combined with C<EVRUN_NOWAIT>, runs the iteration
+without calling the backend at all: timers and periodics are reified and
+every pending event is invoked exactly as without it, only the readiness
+poll is left out. It exists for an embedder that drives the loop from its
+own scheduler on every pass of that scheduler and wants to decide itself
+how often a quiet file descriptor is looked at (the poll is a system call
+on every pass, and on a quiet descriptor it returns nothing on nearly all
+of them). A pass that would block ignores the flag: with a descriptor to
+wait on, the poll is the wake. C<ev_io_fed_addr> tells such an embedder
+whether the last poll found anything.
+
 This is useful if you are waiting for some external event in conjunction
 with something not expressible using other libev watchers (i.e. "roll your
 own C<ev_run>"). However, a pair of C<ev_prepare>/C<ev_check> watchers is
@@ -1194,6 +1205,20 @@ the loop through flags a non-blocking pass reads directly. When this is
 zero, an C<ev_run> that would not block anyway (C<EVRUN_NOWAIT>, or an
 expired timer) skips the backend poll altogether; a blocking run still
 polls, because with no fd the poll is the sleep.
+
+=item const int *ev_io_count_addr (loop)
+
+=item const unsigned int *ev_io_fed_addr (loop)
+
+The address of the count above, and of the number of ready file
+descriptors the backend has reported since the loop was initialised (one
+per descriptor with pending events after a poll, whatever the number of
+watchers on it; it only grows, and wraps). Both read inline, valid until
+C<ev_loop_destroy>, for the embedder that consults them on every pass: the
+first says whether a poll would look at anything, the second, compared
+across passes, whether the last poll found something -- the two inputs of
+a poll cadence that stays at one poll per pass while a descriptor is busy
+and backs off while it is quiet.
 
 =item ev_set_invoke_pending_cb (loop, void (*invoke_pending_cb)(EV_P))
 

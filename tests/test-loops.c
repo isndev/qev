@@ -507,6 +507,58 @@ static void test_nowait_clock(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- EVRUN_NOPOLL: the embedder owns the io cadence (QB-191) ---- */
+/* A non-blocking pass with the flag reifies timers and invokes pending events but never calls
+ * the backend poll; the next pass without it delivers what the fd holds; a BLOCKING pass ignores
+ * the flag, because with an fd to wait on the poll is the wake. */
+static int nopoll_io_hits;
+static void nopoll_io_cb(struct ev_loop *l, ev_io *w, int r) { char c; (void)l; (void)r; (void) !read(w->fd, &c, 1); ++nopoll_io_hits; } /* drains, so the fd is quiet again */
+static void test_nopoll(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer t;
+    OK(*ev_io_count_addr(l) == (int) ev_io_count(l) && ev_io_count(l) == 0, "ev_io_count_addr reads the count ev_io_count reports");
+    ev_timer_init(&t, tick_cb, 0.0, 0.0); ev_timer_start(l, &t);
+    msleep(2);
+    tick_fired = 0;
+    ev_run(l, EVRUN_NOWAIT | EVRUN_NOPOLL);
+    OK(tick_fired == 1, "a NOWAIT|NOPOLL pass still fires an expired timer");
+    ev_timer_init(&t, fed_cb, 3600.0, 0.0); ev_timer_start(l, &t);
+    ev_feed_event(l, &t, EV_CUSTOM);
+    fed = 0;
+    ev_run(l, EVRUN_NOWAIT | EVRUN_NOPOLL);
+    OK(fed == 1, "a NOWAIT|NOPOLL pass still invokes a pending (fed) event");
+    ev_timer_stop(l, &t);
+#ifndef _WIN32
+    {
+        int   fds[2];
+        ev_io w;
+        if (pipe(fds) == 0) {
+            ev_io_init(&w, nopoll_io_cb, fds[0], EV_READ); ev_io_start(l, &w);
+            OK(*ev_io_count_addr(l) == 1, "the inline count follows ev_io_start");
+            nopoll_io_hits = 0;
+            (void) !write(fds[1], "x", 1);
+            {
+                const unsigned int fed0 = *ev_io_fed_addr(l);
+                ev_run(l, EVRUN_NOWAIT | EVRUN_NOPOLL);
+                OK(nopoll_io_hits == 0 && *ev_io_fed_addr(l) == fed0, "a readable fd is NOT delivered by a NOWAIT|NOPOLL pass: no backend poll ran, the fed count did not move");
+                ev_run(l, EVRUN_NOWAIT);
+                OK(nopoll_io_hits == 1 && *ev_io_fed_addr(l) == fed0 + 1, "the next NOWAIT pass without the flag delivers it, and the fed count says the poll found one fd");
+                ev_run(l, EVRUN_NOWAIT);
+                OK(*ev_io_fed_addr(l) == fed0 + 1, "a poll that finds nothing leaves the fed count alone");
+            }
+            (void) !write(fds[1], "y", 1);
+            ev_run(l, EVRUN_ONCE | EVRUN_NOPOLL);
+            OK(nopoll_io_hits == 2, "a blocking pass ignores the flag: with an fd to wait on, the poll is the wake");
+            ev_io_stop(l, &w);
+            close(fds[0]); close(fds[1]);
+        } else {
+            SKIP("EVRUN_NOPOLL over a readable fd", "pipe() failed");
+        }
+    }
+#endif
+    ev_loop_destroy(l);
+}
+
 /* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
 /* On Windows libev read both its clocks from GetSystemTimeAsFileTime, the system tick -- 1 to
  * 15.6 ms steps -- and judged every timer against it; qev reads QueryPerformanceCounter. A
@@ -584,17 +636,18 @@ int main(void) {
     test_nowait_signal();
     test_nowait_clock();
     test_clock_resolution();
+    test_nopoll();
     test_real_fork();
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Thirty-two checks are unconditional in every profile on every platform (only the
+    /* Thirty-five checks are unconditional in every profile on every platform (only the
        cross-thread async cases, the fork case, the signal half of the NOWAIT cases and the
-       pipe half of the io-count case can legitimately skip, and the backend probe skips only
-       where every backend exists, which no platform has). A run below that floor measured
-       nothing and must not read as a pass. */
-    if (g_run < 32) {
-        printf("== FAIL: only %d checks ran; at least 32 are unconditional ==\n", g_run);
+       pipe halves of the io-count and NOPOLL cases can legitimately skip, and the backend
+       probe skips only where every backend exists, which no platform has). A run below that
+       floor measured nothing and must not read as a pass. */
+    if (g_run < 35) {
+        printf("== FAIL: only %d checks ran; at least 35 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

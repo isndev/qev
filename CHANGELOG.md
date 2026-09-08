@@ -84,6 +84,61 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **io_uring: from 47× slower than epoll on a quiet fd to parity (Huly QB-81).** Measured for
+  the first time against `epoll` on the same loop, the io_uring backend ran an embedder's
+  non-blocking pass over one quiet socket at **1345 ns against 28.5** — a self-perpetuating
+  syscall storm. `iouring_poll` armed its deadline timerfd at "now" on every timeout-0 poll
+  (`if (timeout >= 0.)`), the timerfd expired at once, its one-shot `POLL_ADD` completed,
+  `iouring_tfd_cb` drained it, the `POLL_ADD` had to be re-armed through `io_uring_enter`, and the
+  next pass armed "now" again: three syscalls a cycle, ~300k cycles a second, whatever the
+  embedder's cadence (upstream libev carries the same `>=`; nobody drives it at millions of
+  non-blocking passes a second). Three changes. The timerfd is armed only for a poll that will
+  SLEEP (`> 0.`) — it is the wake-up of a blocking wait, and libev judges its timers on `mn_now`
+  every pass: a quiet pass 1345 → 25.8 ns at a 1 µs cadence (epoll 28.3), 1303 → 39.8 when polled
+  on every pass (epoll 124.0), one `io_uring_enter` a second where there were 300k. That exposed
+  the second defect: the ring is created `COOP_TASKRUN`, which defers the kernel's completion
+  work to the task's next syscall, and a loop that now makes none saw a ready fd only at the
+  scheduler tick — wake p50 2.0 ms against epoll's 3.9 µs; the storm had been making that syscall
+  by accident. `IORING_SETUP_TASKRUN_FLAG` makes the kernel raise `IORING_SQ_TASKRUN` when such
+  work is pending, and the post-drain flush enters (`GETEVENTS`) on that flag as on CQ overflow
+  and drains again in the same pass — a memory read when quiet, one syscall when something
+  completed; both flags or neither (the setup fallback drops the set). Third, `iouring_tfd_w`,
+  the `ev_io` the loop starts on its own timerfd, was counted in `iocnt`, so a timers-only loop
+  never had `ev_io_count() == 0` and the no-poll pass of QB-187 and the inline gate of QB-190
+  never applied under io_uring: like the wake pipe since QB-188, it is the loop's own —
+  `io_is_loop_own()` keeps both out of the count for `ev_io_start` / `ev_io_stop` / `ev_walk`.
+  Final figures against epoll (WSL2 6.6, g++-14, one core pinned, medians): quiet-socket pass
+  28.8 / **26.4** ns at a 1 µs cadence, 126.9 / **40.9** on every pass, timers-only 26.5 / 26.4,
+  wake p50 3.98 / 4.18 µs, a parked thread woken by a socket p50 41.6 / 41.3 µs. Parity with a
+  different shape — no syscall on a quiet pass, ~0.2 µs more per delivered event, two syscalls
+  per park — and epoll stays the default. Two Linux tests, skipping cleanly where io_uring is out:
+  `test_iouring_quiet_nowait` (200k NOWAIT passes over a quiet pipe end on io_uring against the
+  same on epoll, ratio ≤ 2; the storm measured 47×) and `test_iouring_blocking_timer` (the
+  positive control that the sleeping path still arms its deadline). `LIBEV_FLAGS` selects a
+  backend for the standalone suite; qb runs its whole suite on the backend under both
+  sanitizers.
+- **The wake protocol's cross-thread flags are atomic accesses, and ThreadSanitizer says so
+  (Huly QB-192).** `pipe_write_wanted` / `pipe_write_skipped`, `sig_pending` / `async_pending`,
+  `ev_async.sent`, `signals[].pending` and `.loop`, and the file-scope `have_realtime` /
+  `have_monotonic` every `ev_loop_new` writes were `EV_ATOMIC_T` (`volatile sig_atomic_t`)
+  accesses fenced by hand — correct on every target libev shipped on, and a data race by the
+  letter of C11 that TSan reported as such at every `ev_async_send` across threads (fifteen
+  warnings for eight threads creating loops at once, `test_concurrent_loop_new`). Every such
+  access goes through `EV_WAKE_LOAD` / `EV_WAKE_STORE_REL` / `EV_WAKE_STORE_RLX` now:
+  `__atomic_load_n` / `__atomic_store_n` on GCC and clang (opt out with
+  `EV_NO_ATOMIC_BUILTINS`), the original access token for token on MSVC; the fences stay (strictly
+  more ordered), the C99 dialect and the `ev.h` ABI are untouched (no `_Atomic`). Cost nil,
+  proven by codegen: g++ -O3 emits the same `movl` for the acquire load and the release/relaxed
+  stores as for the volatile access, byte for byte, and `cl /EP` expands the macros to the
+  original access. Left plain, each justified in place: `loop_done` (`ev_break` is owner-thread
+  only for an embedder), the pre-publication inits of `loop_init` / `ev_async_start`. Found
+  because qb's sanitizer presets finally instrument the embedded `ev.c` (its target had never
+  received the sanitizer or coverage flags); the clang function sanitizer then had to be told
+  about libev's callback dispatch (`EV_NO_SANITIZE_FUNCTION` on `ev_invoke` / `ev_invoke_pending`,
+  which call a `void(*)(EV_P_ ev_timer*,int)` through the generic `ev_watcher*` type — the
+  contract libev is built on), and `ev_wrap.h` is regenerated from `ev_vars.h` again
+  (`sh ./update_ev_wrap`; hand edits since QB-188 had failed its own reproducibility check on
+  every POSIX CI job).
 - **Windows: the `QueryPerformanceCounter` clock of QB-193 was never compiled in (Huly
   QB-195).** libev's "fixes any misconfiguration" block reads `#ifndef CLOCK_MONOTONIC` and
   forces `EV_USE_MONOTONIC` to 0 — and MSVC has no `CLOCK_MONOTONIC` — 450 lines after QB-193 had

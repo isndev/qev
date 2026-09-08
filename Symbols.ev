@@ -29,6 +29,7 @@ ev_idle_start
 ev_idle_stop
 ev_invoke
 ev_invoke_pending
+ev_io_count
 ev_io_modify
 ev_io_start
 ev_io_stop

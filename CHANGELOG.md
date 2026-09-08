@@ -16,8 +16,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   Linux/x86-64: three exported symbols and 24 bytes of `struct ev_loop` (61 `ev_*` / 496 bytes
   against the full profile's 74 / 592).
 
+### Fixed
+
+- **A loop with no fd watcher no longer pays a backend poll it cannot use.** `ev_run` called
+  `backend_poll` unconditionally, so an `EVRUN_NOWAIT` pass over a loop holding only timers —
+  the shape an embedder's request timeout, retry or sleep leaves behind — cost a bare
+  `epoll_wait(0)` / `kevent` / wepoll syscall on every pass for the life of the timer. Measured
+  in qb 3.2's core on i9-12900K / WSL2 g++-14: a coroutine request/reply that arms a 500 ms
+  timeout cost **~800 ns** per round trip against 46 ns without the timeout, three passes each
+  paying the syscall. The loop now keeps a count of its active `ev_io` watchers (the evpipe
+  behind signals and async watchers and the timerfd included, since they are `ev_io`s) and
+  skips the poll when that count is zero AND the wait would not block anyway; a blocking wait
+  is kept, because with no fd it is the sleep. Timers, periodics, idle/prepare/check and
+  pending events are reified exactly as before — `tests/test-loops.c` (`test_io_count`) pins
+  that a timers-only `EVRUN_NOWAIT` pass still fires an expired timer and that a timers-only
+  blocking run still sleeps.
+
 ### Added
 
+- **`ev_io_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::io_count()` in `ev++.h`): the
+  number of active `ev_io` watchers — the count the fix above reads. Covered by
+  `tests/test-loops.c` (`test_io_count`, four unconditional checks plus four on POSIX; the
+  suite's unconditional floor rises 16 → 20). The exported census is 78 `ev_*` on POSIX and 77
+  on Windows.
 - **`ev_active_count_addr(loop)` / `ev_pending_count_addr(loop)` and `EV_NUMPRI`** (`EV_FEATURE_API`,
   plus `loop_ref::active_count_addr()` / `pending_count_addr()` in `ev++.h`): read-only aliases of
   the two counters `ev_active_count` and `ev_pending_count` report, pointing into the loop and

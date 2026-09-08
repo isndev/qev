@@ -207,6 +207,50 @@ static void test_count_addr(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- ev_io_count: the fd watchers a backend poll is for; none -> a poll that would not block is skipped ---- */
+static int tick_fired;
+static void tick_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ++tick_fired; ev_break(l, EVBREAK_ALL); }
+#ifndef _WIN32
+static void io_noop_cb(struct ev_loop *l, ev_io *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+static void test_io_count(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer t;
+    OK(ev_io_count(l) == 0, "fresh loop: no ev_io watcher");
+    ev_timer_init(&t, tick_cb, 0.0, 0.0); ev_timer_start(l, &t);   /* already expired when the run begins */
+    OK(ev_io_count(l) == 0 && ev_active_count(l) == 1, "a timer is not an ev_io: io_count stays 0 while it is active");
+    tick_fired = 0;
+    ev_run(l, EVRUN_NOWAIT);              /* no fd and no wait: the backend poll is skipped -- the timer must fire anyway */
+    OK(tick_fired == 1, "a timers-only EVRUN_NOWAIT pass fires the expired timer without a backend poll");
+    {                                     /* a blocking wait with no fd IS the sleep: kept, not skipped */
+        ev_tstamp t0 = ev_time();
+        ev_timer_init(&t, tick_cb, 0.005, 0.0); ev_timer_start(l, &t);
+        tick_fired = 0;
+        ev_run(l, EVRUN_ONCE);
+        OK(tick_fired == 1 && ev_time() - t0 >= 0.004, "a timers-only blocking run still sleeps until the timer fires");
+    }
+#ifndef _WIN32
+    {
+        int   fds[2];
+        ev_io w;
+        if (pipe(fds) == 0) {
+            ev_io_init(&w, io_noop_cb, fds[0], EV_READ); ev_io_start(l, &w);
+            OK(ev_io_count(l) == 1, "a started ev_io counts");
+            ev_io_start(l, &w);
+            OK(ev_io_count(l) == 1, "starting it a second time counts it once");
+            ev_io_stop(l, &w);
+            OK(ev_io_count(l) == 0, "stopping it brings the count back to 0");
+            ev_io_stop(l, &w);
+            OK(ev_io_count(l) == 0, "stopping it a second time does not go below 0");
+            close(fds[0]); close(fds[1]);
+        } else {
+            SKIP("ev_io_count follows ev_io_start / ev_io_stop", "pipe() failed");
+        }
+    }
+#endif
+    ev_loop_destroy(l);
+}
+
 /* ---- ev_feed_event delivers without any real readiness ---- */
 static int fed;
 static void fed_cb(struct ev_loop *l, ev_timer *w, int r) {
@@ -338,6 +382,7 @@ int main(void) {
     test_iteration_count();
     test_active_count();
     test_count_addr();
+    test_io_count();
     test_feed_event();
     test_stop_inactive();
     test_many_timers();
@@ -346,12 +391,13 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Sixteen checks are unconditional in every profile on every platform (only the
-       cross-thread async and the fork case can legitimately skip, and the backend
-       probe skips only where every backend exists, which no platform has). A run
-       below that floor measured nothing and must not read as a pass. */
-    if (g_run < 16) {
-        printf("== FAIL: only %d checks ran; at least 16 are unconditional ==\n", g_run);
+    /* Twenty checks are unconditional in every profile on every platform (only the
+       cross-thread async, the fork case and the pipe half of the io-count case can
+       legitimately skip, and the backend probe skips only where every backend exists,
+       which no platform has). A run below that floor measured nothing and must not
+       read as a pass. */
+    if (g_run < 20) {
+        printf("== FAIL: only %d checks ran; at least 20 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

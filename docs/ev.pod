@@ -1184,6 +1184,17 @@ C<EVRUN_NOWAIT> from its own scheduler skip a run that could do nothing:
 when both are zero there is no watcher to fire and no event queued, so the
 backend poll would only cost its syscall.
 
+=item unsigned int ev_io_count (loop)
+
+Returns the number of active C<ev_io> watchers, i.e. what the backend
+poll has to look at. The loop's own internal watchers on real file
+descriptors count (the timerfd behind periodics, the signalfd); the pipe
+behind signal and async watchers does not, because what it carries reaches
+the loop through flags a non-blocking pass reads directly. When this is
+zero, an C<ev_run> that would not block anyway (C<EVRUN_NOWAIT>, or an
+expired timer) skips the backend poll altogether; a blocking run still
+polls, because with no fd the poll is the sleep.
+
 =item ev_set_invoke_pending_cb (loop, void (*invoke_pending_cb)(EV_P))
 
 This overrides the invoke pending functionality of the loop: Instead of

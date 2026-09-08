@@ -19,11 +19,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <signal.h>
+
 #ifndef _WIN32
 # include <pthread.h>
 # include <sys/types.h>
 # include <sys/wait.h>
 # include <unistd.h>
+# include <time.h>
+static void msleep(int ms) { struct timespec ts = { ms / 1000, (ms % 1000) * 1000L * 1000L }; nanosleep(&ts, NULL); }
+#else
+# include <windows.h>
+static void msleep(int ms) { Sleep((DWORD) ms); }
 #endif
 
 static int g_fail = 0, g_run = 0, g_skip = 0;
@@ -339,6 +346,192 @@ static void test_async_from_thread(void) { SKIP("cross-thread ev_async_send", "P
 static void test_async_from_thread(void) { SKIP("cross-thread ev_async_send", "EV_ASYNC_ENABLE is 0 in this build"); }
 #endif
 
+/* ---- the non-blocking pass at its floor (QB-188): a loop that holds no fd and is driven only by
+ * EVRUN_NOWAIT passes never polls its backend -- the evpipe behind its signal and async watchers is
+ * not counted as a pollable fd, and a pass that cannot sleep raises no wake-up handshake -- and
+ * everything the evpipe would have carried still arrives, through the flags, on the next pass.
+ * These are the shapes an embedder that drives the loop from its own scheduler hits on every
+ * busy pass of a thread that owns a timer, so each is pinned in both directions: delivered, and
+ * delivered by the pass right after the send. ---- */
+static int nw_async_hits;
+#if EV_ASYNC_ENABLE
+static void nw_async_cb(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)w; (void)r; ++nw_async_hits; }
+static struct ev_loop *nw_loop;
+static ev_async        nw_async;
+# ifndef _WIN32
+static volatile int    nw_hits_seen;   /* the loop thread's count, read by the sender */
+static volatile int    nw_late;        /* a send the loop took more than 2 s to deliver: a lost wake, not a slow host */
+static int             nw_sent;
+static void *nw_sender(void *arg) {
+    int rounds = *(int *) arg, i;
+    for (i = 0; i < rounds; ++i) {
+        int       before = nw_hits_seen;
+        ev_tstamp t0     = ev_time();
+        ev_async_send(nw_loop, &nw_async);
+        ++nw_sent;
+        /* A loop thread that only ever spins NOWAIT passes is a CPU hog, and a loaded host
+           (measured: a 20-job build beside this suite) parks it for 100+ ms at a time; the
+           budget is for a wake that is LOST -- one the next send would deliver -- not for a
+           slow one, so it is wall-clock and generous. */
+        while (nw_hits_seen == before && ev_time() - t0 < 2.0) msleep(1);
+        if (nw_hits_seen == before) { nw_late = 1; break; } /* one lost wake is the finding; do not wait 2 s per round for 199 more */
+    }
+    return NULL;
+}
+# endif
+static void test_nowait_async(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer far_off;
+    nw_loop = l;
+    ev_async_init(&nw_async, nw_async_cb);
+    ev_async_start(l, &nw_async);
+    ev_timer_init(&far_off, tick_cb, 3600.0, 0.0); ev_timer_start(l, &far_off); /* what a pending request timeout looks like */
+    OK(ev_io_count(l) == 0, "the evpipe an async watcher creates is not a pollable fd: io_count stays 0");
+    nw_async_hits = 0;
+    ev_run(l, EVRUN_NOWAIT);
+    OK(nw_async_hits == 0, "a NOWAIT pass with nothing sent invokes no async callback");
+    ev_async_send(l, &nw_async);          /* between two passes: no handshake was raised, so this took the flag path */
+    ev_run(l, EVRUN_NOWAIT);
+    OK(nw_async_hits == 1, "an ev_async_send between two NOWAIT passes is delivered by the very next pass, with no fd to poll");
+    ev_async_send(l, &nw_async); ev_async_send(l, &nw_async);
+    ev_run(l, EVRUN_NOWAIT);
+    OK(nw_async_hits == 2, "two sends before a pass coalesce into one callback, as they always did");
+    {                                     /* a park -- a blocking pass -- and NOWAIT passes again afterwards */
+        ev_timer soon; ev_timer_init(&soon, tick_cb, 0.002, 0.0); ev_timer_start(l, &soon);
+        tick_fired = 0;
+        ev_run(l, EVRUN_ONCE);            /* sleeps until the timer: the evpipe IS polled here */
+        OK(tick_fired == 1 && ev_io_count(l) == 0, "a blocking pass over the same loop still counts no pollable fd afterwards");
+        ev_timer_stop(l, &soon);          /* a no-op once it fired; a stack watcher must never outlive its block */
+        ev_async_send(l, &nw_async);
+        ev_run(l, EVRUN_NOWAIT);
+        OK(nw_async_hits == 3, "a send after the park is delivered by the next NOWAIT pass");
+    }
+# ifndef _WIN32
+    {                                     /* another thread sends; this one only ever runs NOWAIT passes: no poll, ever */
+        pthread_t th;
+        int rounds = 200;
+        nw_hits_seen = nw_async_hits; nw_late = 0; nw_sent = 0;
+        if (pthread_create(&th, NULL, nw_sender, &rounds) == 0) {
+            ev_tstamp t0 = ev_time();
+            while (!nw_late && nw_async_hits < 3 + rounds) { /* until the last send is delivered, not merely sent */
+                ev_run(l, EVRUN_NOWAIT);
+                nw_hits_seen = nw_async_hits;
+                if (ev_time() - t0 > 20.0) break;   /* the watchdog: a lost wake would otherwise spin forever */
+            }
+            pthread_join(th, NULL);
+            if (nw_late || nw_async_hits != 3 + rounds)
+                printf("        (late=%d sent=%d hits=%d expected=%d)\n", nw_late, nw_sent, nw_async_hits, 3 + rounds);
+            OK(nw_late == 0 && nw_async_hits == 3 + rounds,
+               "200 cross-thread sends, each delivered by a NOWAIT-only loop before the next, none coalesced, none lost");
+        } else
+            SKIP("cross-thread sends into a NOWAIT-only loop", "pthread_create failed");
+    }
+    {                                     /* the mixed shape: parks (blocking passes) interleaved with NOWAIT passes while
+                                             the other thread keeps sending -- the window in which a sender WRITES the
+                                             evpipe (it saw the handshake up) and the byte lands after the poll returned */
+        pthread_t th;
+        int rounds = 200;
+        ev_timer cap; ev_timer_init(&cap, tick_cb, 0.0005, 0.0005); ev_timer_start(l, &cap);
+        nw_hits_seen = nw_async_hits; nw_late = 0; nw_sent = 0;
+        if (pthread_create(&th, NULL, nw_sender, &rounds) == 0) {
+            ev_tstamp t0 = ev_time();
+            while (!nw_late && nw_async_hits < 3 + 2 * rounds) {
+                int i;
+                ev_run(l, EVRUN_ONCE);    /* a park of at most 0.5 ms */
+                nw_hits_seen = nw_async_hits;
+                for (i = 0; i < 50; ++i) { ev_run(l, EVRUN_NOWAIT); nw_hits_seen = nw_async_hits; }
+                if (ev_time() - t0 > 20.0) break;
+            }
+            pthread_join(th, NULL);
+            if (nw_late || nw_async_hits != 3 + 2 * rounds)
+                printf("        (late=%d sent=%d hits=%d expected=%d)\n", nw_late, nw_sent, nw_async_hits, 3 + 2 * rounds);
+            OK(nw_late == 0 && nw_async_hits == 3 + 2 * rounds,
+               "200 sends into a loop alternating parks and NOWAIT passes: each delivered before the next, none lost");
+        } else
+            SKIP("cross-thread sends across parks and NOWAIT passes", "pthread_create failed");
+        ev_timer_stop(l, &cap);
+    }
+# endif
+    ev_timer_stop(l, &far_off);
+    ev_async_stop(l, &nw_async);
+    ev_loop_destroy(l);
+}
+#else
+static void test_nowait_async(void) { SKIP("async delivery into a NOWAIT-only loop", "EV_ASYNC_ENABLE is 0 in this build"); }
+#endif
+
+#if EV_SIGNAL_ENABLE && !defined(_WIN32)
+static int nw_sig_hits;
+static void nw_sig_cb(struct ev_loop *l, ev_signal *w, int r) { (void)l; (void)w; (void)r; ++nw_sig_hits; }
+static void test_nowait_signal(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);   /* the default loop's sighandler + evpipe path, not signalfd */
+    ev_signal sw;
+    ev_timer far_off;
+    ev_signal_init(&sw, nw_sig_cb, SIGUSR1); ev_signal_start(l, &sw);
+    ev_timer_init(&far_off, tick_cb, 3600.0, 0.0); ev_timer_start(l, &far_off);
+    OK(ev_io_count(l) == 0, "the evpipe a signal watcher creates is not a pollable fd either");
+    nw_sig_hits = 0;
+    ev_run(l, EVRUN_NOWAIT);
+    raise(SIGUSR1);                       /* the handler runs here, between two passes, and takes the flag path */
+    ev_run(l, EVRUN_NOWAIT);
+    OK(nw_sig_hits == 1, "a signal raised between two NOWAIT passes is delivered by the very next pass, with no fd to poll");
+    ev_timer_stop(l, &far_off);
+    ev_signal_stop(l, &sw);
+    ev_loop_destroy(l);
+}
+#else
+static void test_nowait_signal(void) { SKIP("signal delivery into a NOWAIT-only loop", "POSIX signals with EV_SIGNAL_ENABLE only"); }
+#endif
+
+static void test_nowait_clock(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer far_off;
+    ev_tstamp before;
+    ev_timer_init(&far_off, tick_cb, 3600.0, 0.0); ev_timer_start(l, &far_off);
+    ev_run(l, EVRUN_NOWAIT);
+    before = ev_now(l);
+    msleep(5);
+    ev_run(l, EVRUN_NOWAIT);              /* one clock read per NOWAIT pass, not two -- and not zero */
+    OK(ev_now(l) - before >= 0.004, "a NOWAIT pass still advances ev_now (its one clock read is the post-poll one)");
+    {                                     /* the read is what an expiring timer is judged against */
+        ev_timer soon; ev_timer_init(&soon, tick_cb, 0.003, 0.0); ev_timer_start(l, &soon);
+        tick_fired = 0;
+        ev_run(l, EVRUN_NOWAIT);
+        OK(tick_fired == 0, "a timer 3 ms out does not fire on a pass that runs at once");
+        msleep(5);
+        ev_run(l, EVRUN_NOWAIT);
+        OK(tick_fired == 1, "and fires on the first pass after its deadline, judged on that pass's own clock read");
+        ev_timer_stop(l, &soon);
+    }
+    ev_timer_stop(l, &far_off);
+    ev_loop_destroy(l);
+}
+
+/* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
+/* On Windows libev read both its clocks from GetSystemTimeAsFileTime, the system tick -- 1 to
+ * 15.6 ms steps -- and judged every timer against it; qev reads QueryPerformanceCounter. A
+ * timer started and run inside one tick is the shape test_io_count begins with, and it is why
+ * that case failed on MSVC before this one existed. */
+static void test_clock_resolution(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_tstamp t0 = ev_time(), first, last;
+    int distinct = 0, backwards = 0;
+    ev_now_update(l);
+    first = last = ev_now(l);
+    while (ev_time() - t0 < 0.05) {       /* 50 ms of back-to-back reads */
+        ev_tstamp now;
+        ev_now_update(l);
+        now = ev_now(l);
+        if (now != last) ++distinct;
+        if (now < last) ++backwards;
+        last = now;
+    }
+    OK(distinct >= 1000, "ev_now moves at least 1000 times in 50 ms of back-to-back reads: a clock finer than 50 us, not the system tick");
+    OK(backwards == 0, "ev_now never steps back across back-to-back reads");
+    OK(last - first >= 0.045 && last - first <= 0.5, "and the loop's clock measures the 50 ms the wall clock did");
+    ev_loop_destroy(l);
+}
+
 #ifndef _WIN32
 /* ---- a real fork(): the child re-arms with ev_loop_fork and its loop works ---- */
 static int postfork_hit;
@@ -387,17 +580,21 @@ int main(void) {
     test_stop_inactive();
     test_many_timers();
     test_async_from_thread();
+    test_nowait_async();
+    test_nowait_signal();
+    test_nowait_clock();
+    test_clock_resolution();
     test_real_fork();
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Twenty checks are unconditional in every profile on every platform (only the
-       cross-thread async, the fork case and the pipe half of the io-count case can
-       legitimately skip, and the backend probe skips only where every backend exists,
-       which no platform has). A run below that floor measured nothing and must not
-       read as a pass. */
-    if (g_run < 20) {
-        printf("== FAIL: only %d checks ran; at least 20 are unconditional ==\n", g_run);
+    /* Thirty-two checks are unconditional in every profile on every platform (only the
+       cross-thread async cases, the fork case, the signal half of the NOWAIT cases and the
+       pipe half of the io-count case can legitimately skip, and the backend probe skips only
+       where every backend exists, which no platform has). A run below that floor measured
+       nothing and must not read as a pass. */
+    if (g_run < 32) {
+        printf("== FAIL: only %d checks ran; at least 32 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

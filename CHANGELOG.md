@@ -15,8 +15,57 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   is the only one libev offers; qb 3.2's `VirtualCore` is that embedder. Cost, measured on
   Linux/x86-64: three exported symbols and 24 bytes of `struct ev_loop` (61 `ev_*` / 496 bytes
   against the full profile's 74 / 592).
+- **The non-blocking pass at its floor (Huly QB-188).** An `EVRUN_NOWAIT` pass — what an
+  embedder that drives the loop from its own scheduler pays on every pass of a thread that owns
+  one watcher — did three things only a pass that may sleep needs: it read the clock twice
+  (once to size a sleep it would not take, once after the poll), raised the wake-up handshake
+  (`pipe_write_wanted = 1` plus a full memory fence, so that a signal handler or an
+  `ev_async_send` on another thread would WRITE the evpipe to end a sleep), and — since the
+  evpipe is an `ev_io` — counted that pipe as a pollable fd, so the first signal or async
+  watcher a loop ever started re-enabled the backend poll for the life of the loop, undoing the
+  fix below for every embedder that parks with `ev_async_send` as its wake. Now a NOWAIT pass
+  reads the clock once (after the poll, the read timers and callbacks see), leaves the
+  handshake down — a sender then takes the flag path it already had for a loop that is not
+  sleeping, and the tail of the pass reads `sig_pending` / `async_pending` directly beside
+  `pipe_write_skipped`, so a wake-up byte written around a sleep and landing after its poll
+  returned is delivered by the next pass rather than by the next poll — and `ev_io_start` /
+  `ev_io_stop` do not count the loop's own `pipe_w`. Measured with `bench/bench-pass.c`
+  (i9-12900K): WSL2 g++-14, a NOWAIT pass over a timers-only loop **51 → 22 ns**, over a
+  quiet socket 132 → 101, an empty loop 50 → 22; MSVC 19.51, timers-only 19.7 → 15.8. In qb
+  3.2's core (`qb-vs-others` `ask-cost`): a `co_await qb::ask<E>()` with a 500 ms timeout
+  **174 → 115 ns** per round trip on g++ (−34 %), 124 → 115 on MSVC (−7 %; there the pass was
+  already cheap because its clock was the system tick — see the Windows clock fix below), a
+  one-chunk `ask_stream` with a timeout 240 → 179 / 327 → 319; the untimed ask, the push and
+  the one-core pass do not move. `tests/test-loops.c` pins the delivery contract in both
+  directions (`test_nowait_async`, `test_nowait_signal`, `test_nowait_clock`: a send or a
+  signal between two NOWAIT passes is delivered by the very next pass with no fd to poll, 200
+  cross-thread sends into a NOWAIT-only loop and 200 more across parks interleaved with
+  NOWAIT passes each delivered before the next, the evpipe not counted after a park, `ev_now`
+  advancing across a NOWAIT pass and an expiring timer judged on that pass's own read; the
+  unconditional floor rises 20 → 32 with the clock case below). Each of the two mechanisms
+  was disabled in turn and the suite rejected both (7 and 3 checks).
 
 ### Fixed
+
+- **Windows: the loop's clocks are `QueryPerformanceCounter` and
+  `GetSystemTimePreciseAsFileTime`, not the system tick (Huly QB-193).** `ev_win32.c` read
+  the wall clock from `GetSystemTimeAsFileTime` — a memory read of the system TICK, stepping
+  every 1 to 15.6 ms (2.2 ms measured on Windows 11) — and MSVC having no `clock_gettime`,
+  `EV_USE_MONOTONIC` was 0 and that same tick was the MONOTONIC clock: every timer was judged
+  at the tick's granularity (a 0-second timer started and run inside one tick did not fire; a
+  1 ms timeout could fire 16 ms late), and a wall-clock adjustment moved the loop's idea of
+  now. The monotonic clock is `QueryPerformanceCounter` now (sub-microsecond, never steps
+  back, no syscall), the wall clock `GetSystemTimePreciseAsFileTime` (Windows 8+, resolved at
+  run time with the coarse call as the fallback, read once per `MIN_TIMEJUMP/2` like every
+  other host). Found by the loop suite the first time it ran on MSVC: `test_io_count`'s
+  0-second timer did not fire on its NOWAIT pass, and the re-init of the still-active watcher
+  corrupted the heap for the check after it. What it costs — the honest half: a precise read
+  is ~16 ns where the tick was 3, so on MSVC a non-blocking pass is 15.8 → 31 ns, a timer arm
+  with `ev_now_update` 5.8 → 24, and qb's timed ask 115 → 166 ns; the qev programme's next
+  steps take the libev timer off the request path and hand the embedder's own reading to the
+  loop (Huly QB-189, QB-190). `test_clock_resolution` pins it: `ev_now` moves at least 1000
+  times in 50 ms of back-to-back reads and never steps back; the MSVC loop suite is
+  **39 run / 0 failed / 3 skipped** (was 27 / 2 / 2).
 
 - **A loop with no fd watcher no longer pays a backend poll it cannot use.** `ev_run` called
   `backend_poll` unconditionally, so an `EVRUN_NOWAIT` pass over a loop holding only timers —
@@ -24,8 +73,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   `epoll_wait(0)` / `kevent` / wepoll syscall on every pass for the life of the timer. Measured
   in qb 3.2's core on i9-12900K / WSL2 g++-14: a coroutine request/reply that arms a 500 ms
   timeout cost **~800 ns** per round trip against 46 ns without the timeout, three passes each
-  paying the syscall. The loop now keeps a count of its active `ev_io` watchers (the evpipe
-  behind signals and async watchers and the timerfd included, since they are `ev_io`s) and
+  paying the syscall. The loop now keeps a count of its active `ev_io` watchers (the timerfd
+  and the signalfd included, since they are `ev_io`s on real fds; the loop's own evpipe is not
+  — see the non-blocking pass entry above) and
   skips the poll when that count is zero AND the wait would not block anyway; a blocking wait
   is kept, because with no fd it is the sleep. Timers, periodics, idle/prepare/check and
   pending events are reified exactly as before — `tests/test-loops.c` (`test_io_count`) pins
@@ -35,7 +85,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 ### Added
 
 - **`ev_io_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::io_count()` in `ev++.h`): the
-  number of active `ev_io` watchers — the count the fix above reads. Covered by
+  number of active `ev_io` watchers, the loop's own wake pipe excluded — the count the fix
+  above reads. Covered by
   `tests/test-loops.c` (`test_io_count`, four unconditional checks plus four on POSIX; the
   suite's unconditional floor rises 16 → 20). The exported census is 78 `ev_*` on POSIX and 77
   on Windows.

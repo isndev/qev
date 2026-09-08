@@ -359,13 +359,18 @@ static void nw_async_cb(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)
 static struct ev_loop *nw_loop;
 static ev_async        nw_async;
 # ifndef _WIN32
-static volatile int    nw_hits_seen;   /* the loop thread's count, read by the sender */
-static volatile int    nw_late;        /* a send the loop took more than 2 s to deliver: a lost wake, not a slow host */
-static int             nw_sent;
+/* Cross-thread progress counters (the loop thread and nw_sender): plain `volatile` does not make
+   an access atomic to ThreadSanitizer, so the coordination is expressed with the __atomic builtins
+   -- RELAXED, since the real ordering is the ev_async wake itself, not these counters. */
+#define NW_LOAD(x)     __atomic_load_n(&(x), __ATOMIC_RELAXED)
+#define NW_STORE(x, v) __atomic_store_n(&(x), (v), __ATOMIC_RELAXED)
+static int             nw_hits_seen;   /* the loop thread's count, read by the sender */
+static int             nw_late;        /* a send the loop took more than 2 s to deliver: a lost wake, not a slow host */
+static int             nw_sent;        /* sender-only until the join */
 static void *nw_sender(void *arg) {
     int rounds = *(int *) arg, i;
     for (i = 0; i < rounds; ++i) {
-        int       before = nw_hits_seen;
+        int       before = NW_LOAD(nw_hits_seen);
         ev_tstamp t0     = ev_time();
         ev_async_send(nw_loop, &nw_async);
         ++nw_sent;
@@ -373,8 +378,8 @@ static void *nw_sender(void *arg) {
            (measured: a 20-job build beside this suite) parks it for 100+ ms at a time; the
            budget is for a wake that is LOST -- one the next send would deliver -- not for a
            slow one, so it is wall-clock and generous. */
-        while (nw_hits_seen == before && ev_time() - t0 < 2.0) msleep(1);
-        if (nw_hits_seen == before) { nw_late = 1; break; } /* one lost wake is the finding; do not wait 2 s per round for 199 more */
+        while (NW_LOAD(nw_hits_seen) == before && ev_time() - t0 < 2.0) msleep(1);
+        if (NW_LOAD(nw_hits_seen) == before) { NW_STORE(nw_late, 1); break; } /* one lost wake is the finding; do not wait 2 s per round for 199 more */
     }
     return NULL;
 }
@@ -410,12 +415,12 @@ static void test_nowait_async(void) {
     {                                     /* another thread sends; this one only ever runs NOWAIT passes: no poll, ever */
         pthread_t th;
         int rounds = 200;
-        nw_hits_seen = nw_async_hits; nw_late = 0; nw_sent = 0;
+        NW_STORE(nw_hits_seen, nw_async_hits); NW_STORE(nw_late, 0); nw_sent = 0;
         if (pthread_create(&th, NULL, nw_sender, &rounds) == 0) {
             ev_tstamp t0 = ev_time();
-            while (!nw_late && nw_async_hits < 3 + rounds) { /* until the last send is delivered, not merely sent */
+            while (!NW_LOAD(nw_late) && nw_async_hits < 3 + rounds) { /* until the last send is delivered, not merely sent */
                 ev_run(l, EVRUN_NOWAIT);
-                nw_hits_seen = nw_async_hits;
+                NW_STORE(nw_hits_seen, nw_async_hits);
                 if (ev_time() - t0 > 20.0) break;   /* the watchdog: a lost wake would otherwise spin forever */
             }
             pthread_join(th, NULL);
@@ -432,14 +437,14 @@ static void test_nowait_async(void) {
         pthread_t th;
         int rounds = 200;
         ev_timer cap; ev_timer_init(&cap, tick_cb, 0.0005, 0.0005); ev_timer_start(l, &cap);
-        nw_hits_seen = nw_async_hits; nw_late = 0; nw_sent = 0;
+        NW_STORE(nw_hits_seen, nw_async_hits); NW_STORE(nw_late, 0); nw_sent = 0;
         if (pthread_create(&th, NULL, nw_sender, &rounds) == 0) {
             ev_tstamp t0 = ev_time();
-            while (!nw_late && nw_async_hits < 3 + 2 * rounds) {
+            while (!NW_LOAD(nw_late) && nw_async_hits < 3 + 2 * rounds) {
                 int i;
                 ev_run(l, EVRUN_ONCE);    /* a park of at most 0.5 ms */
-                nw_hits_seen = nw_async_hits;
-                for (i = 0; i < 50; ++i) { ev_run(l, EVRUN_NOWAIT); nw_hits_seen = nw_async_hits; }
+                NW_STORE(nw_hits_seen, nw_async_hits);
+                for (i = 0; i < 50; ++i) { ev_run(l, EVRUN_NOWAIT); NW_STORE(nw_hits_seen, nw_async_hits); }
                 if (ev_time() - t0 > 20.0) break;
             }
             pthread_join(th, NULL);
@@ -666,6 +671,97 @@ static void test_wake_pending(void) {
 }
 #endif
 
+#ifndef _WIN32
+/* ---- concurrent ev_loop_new from N threads (QB-192) ----
+   Every VirtualCore thread in qb creates its own loop with ev_loop_new, which runs loop_init's
+   have_realtime / have_monotonic capability probe -- file-scope flags shared by ALL loops. N
+   threads doing that at once read and write those flags concurrently; before QB-192 that was a
+   data race (idempotent, but a race), invisible until ev.c was instrumented. This drives the
+   exact shape: THREADS loops created, each run once and destroyed, all at the same time. It
+   asserts every loop came up with a working clock; under ThreadSanitizer it asserts the absence
+   of the loop_init race (a plain build cannot see it, which is the whole point of the gate). */
+#define NLOOP_THREADS 8
+static int       lc_ok[NLOOP_THREADS];
+static void lc_timer_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ev_break(l, EVBREAK_ALL); }
+static void *lc_thread(void *arg) {
+    int idx = *(int *) arg;
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);   /* <- loop_init: the capability probe */
+    if (l) {
+        ev_timer t;
+        ev_timer_init(&t, lc_timer_cb, 0.001, 0.0); ev_timer_start(l, &t);
+        ev_run(l, 0);                                /* one real turn: the clock must advance a timer to fire it */
+        lc_ok[idx] = (ev_now(l) > 0.);               /* the loop got a working clock from loop_init */
+        ev_timer_stop(l, &t);
+        ev_loop_destroy(l);
+    }
+    return NULL;
+}
+static void test_concurrent_loop_new(void) {
+    pthread_t th[NLOOP_THREADS];
+    int       id[NLOOP_THREADS], i, started = 0, all_ok = 1;
+    for (i = 0; i < NLOOP_THREADS; ++i) { lc_ok[i] = 0; id[i] = i; }
+    for (i = 0; i < NLOOP_THREADS; ++i)
+        if (pthread_create(&th[i], NULL, lc_thread, &id[i]) == 0) ++started;
+    for (i = 0; i < started; ++i) pthread_join(th[i], NULL);
+    if (started < NLOOP_THREADS) { SKIP("concurrent ev_loop_new", "pthread_create failed"); return; }
+    for (i = 0; i < NLOOP_THREADS; ++i) all_ok = all_ok && lc_ok[i];
+    OK(all_ok, "N threads each create a loop, run a timer to completion and destroy it, concurrently: every loop's clock works (loop_init's capability probe is race-free -- QB-192)");
+}
+
+/* ---- two threads sending into ONE loop at once (QB-192) ----
+   The wake protocol's async_pending flag and each ev_async.sent are written by ANY sending
+   thread and read/cleared by the loop thread. One sender is test_nowait_async; two senders,
+   each to its own async watcher, exercise the flags under real concurrent writers -- the shape
+   TSan must find clean once ev.c is instrumented, and a lost/misattributed wake would drop a
+   count here. Each sender does ROUNDS sends and waits for its own watcher to catch up. */
+#define TS_ROUNDS 300
+static ev_async ts_a[2];
+static int      ts_hits[2];
+static int      ts_seen[2];       /* the loop thread's published per-watcher count */
+static void ts_cb0(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)w; (void)r; ++ts_hits[0]; }
+static void ts_cb1(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)w; (void)r; ++ts_hits[1]; }
+static void *ts_sender(void *arg) {
+    int k = *(int *) arg, i;
+    for (i = 0; i < TS_ROUNDS; ++i) {
+        int before = __atomic_load_n(&ts_seen[k], __ATOMIC_RELAXED);
+        ev_async_send(nw_loop, &ts_a[k]);
+        ev_tstamp t0 = ev_time();
+        while (__atomic_load_n(&ts_seen[k], __ATOMIC_RELAXED) == before && ev_time() - t0 < 2.0) msleep(1);
+        if (__atomic_load_n(&ts_seen[k], __ATOMIC_RELAXED) == before) break; /* a lost wake */
+    }
+    return NULL;
+}
+static void test_async_two_senders(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    pthread_t th[2];
+    int       id[2] = {0, 1}, i, started = 0;
+    ev_timer  far_off;
+    nw_loop = l;
+    ts_hits[0] = ts_hits[1] = ts_seen[0] = ts_seen[1] = 0;
+    ev_async_init(&ts_a[0], ts_cb0); ev_async_start(l, &ts_a[0]);
+    ev_async_init(&ts_a[1], ts_cb1); ev_async_start(l, &ts_a[1]);
+    ev_timer_init(&far_off, tick_cb, 3600.0, 0.0); ev_timer_start(l, &far_off);
+    for (i = 0; i < 2; ++i) if (pthread_create(&th[i], NULL, ts_sender, &id[i]) == 0) ++started;
+    if (started == 2) {
+        ev_tstamp t0 = ev_time();
+        while ((ts_hits[0] < TS_ROUNDS || ts_hits[1] < TS_ROUNDS) && ev_time() - t0 < 20.0) {
+            ev_run(l, EVRUN_NOWAIT);
+            __atomic_store_n(&ts_seen[0], ts_hits[0], __ATOMIC_RELAXED);
+            __atomic_store_n(&ts_seen[1], ts_hits[1], __ATOMIC_RELAXED);
+        }
+        for (i = 0; i < started; ++i) pthread_join(th[i], NULL);
+        OK(ts_hits[0] == TS_ROUNDS && ts_hits[1] == TS_ROUNDS,
+           "two threads sending into one loop at once: every send on each of the two async watchers is delivered, none lost, none misattributed (QB-192)");
+    } else {
+        for (i = 0; i < started; ++i) pthread_join(th[i], NULL);
+        SKIP("two concurrent async senders", "pthread_create failed");
+    }
+    ev_async_stop(l, &ts_a[0]); ev_async_stop(l, &ts_a[1]);
+    ev_timer_stop(l, &far_off);
+    ev_loop_destroy(l);
+}
+#endif
+
 /* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
 /* On Windows libev read both its clocks from GetSystemTimeAsFileTime, the system tick -- 1 to
  * 15.6 ms steps -- and judged every timer against it; qev reads QueryPerformanceCounter. A
@@ -750,6 +846,14 @@ int main(void) {
     test_wake_pending();
 #else
     SKIP("wake pending (ev_wake_pending_addr)", "async watchers compiled out");
+#endif
+#ifndef _WIN32
+    test_concurrent_loop_new();
+# if EV_ASYNC_ENABLE
+    test_async_two_senders();
+# else
+    SKIP("two concurrent async senders", "async watchers compiled out");
+# endif
 #endif
     test_real_fork();
 

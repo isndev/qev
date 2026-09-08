@@ -559,6 +559,113 @@ static void test_nopoll(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- the embedder supplies the pass's clock (QB-190) ---- */
+/* qb's core reads the monotonic clock on its idle passes anyway; ev_now_set hands that reading
+   to the loop so the NOWAIT pass that follows reads none of its own. Timers are judged against
+   the supplied time -- a sample ahead of the wall fires a far timer at once -- the loop's clock
+   never steps back for an old sample, the supply stands for ONE pass, and a blocking pass
+   always re-reads. */
+static int ns_fired;
+static void ns_cb(struct ev_loop *l, ev_timer *w, int r) { (void)l; (void)w; (void)r; ++ns_fired; }
+static void test_now_set(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer t;
+    ev_run(l, EVRUN_NOWAIT);                                    /* one plain pass: the loop's own reading */
+    {
+        ev_tstamp c0 = ev_clock_now(), c1;
+        msleep(2);
+        c1 = ev_clock_now();
+        OK(c1 > c0 && c1 - c0 < 1.0, "ev_clock_now reads the loop's monotonic clock: it advances across a sleep");
+    }
+    ev_timer_init(&t, ns_cb, 5.0, 0.0);                          /* a timer five seconds out */
+    ev_now_set(l, ev_clock_now());
+    ev_timer_start(l, &t);
+    ns_fired = 0;
+    ev_run(l, EVRUN_NOWAIT);
+    OK(ns_fired == 0, "a five-second timer armed against a fresh supplied clock does not fire on that pass");
+    ev_now_set(l, ev_clock_now() + 10.0);                        /* the embedder says it is ten seconds later */
+    ev_run(l, EVRUN_NOWAIT);
+    OK(ns_fired == 1, "the loop judges its timers against the SUPPLIED time: the pass fires the timer at once, no clock read of its own");
+    {
+        ev_timer z; ev_tstamp ahead;
+        ev_timer_init(&z, ns_cb, 0.0, 0.0); ev_timer_start(l, &z); /* a zero timer's deadline IS the loop's time */
+        ahead = ev_timer_next(l);
+        ev_timer_stop(l, &z);
+        ev_now_set(l, ev_clock_now() - 100.0);                   /* an older sample ... */
+        ev_timer_start(l, &z);
+        OK(ahead > ev_clock_now() + 9.0 && ev_timer_next(l) >= ahead, "a supplied sample older than the loop's time is ignored: the loop's clock never steps back");
+        ev_timer_stop(l, &z);
+    }
+    ev_loop_destroy(l);
+    l = ev_loop_new(EVFLAG_AUTO);
+    ev_run(l, EVRUN_NOWAIT);
+    {
+        ev_tstamp rt0;
+        ev_now_set(l, ev_clock_now());
+        ev_run(l, EVRUN_NOWAIT);                                 /* consumes the supply */
+        rt0 = ev_now(l);
+        msleep(20);
+        ev_run(l, EVRUN_NOWAIT);                                 /* no supply: this pass reads its own clock */
+        OK(ev_now(l) - rt0 >= 0.015, "a supplied clock stands for one NOWAIT pass: the next one reads the clock again (20 ms slept, the loop saw them)");
+        ev_now_set(l, ev_clock_now());                           /* a supply, then a BLOCKING pass */
+        ev_timer_init(&t, ns_cb, 0.01, 0.0); ev_timer_start(l, &t);
+        {
+            ev_tstamp t0 = ev_time(), rt1;
+            ev_run(l, EVRUN_ONCE);
+            OK(ev_time() - t0 >= 0.005 && ev_time() - t0 < 0.5, "a blocking pass after a supply still sleeps until its timer: a wait reads the clock it needs");
+            rt1 = ev_now(l);
+            msleep(20);
+            ev_run(l, EVRUN_NOWAIT);
+            OK(ev_now(l) - rt1 >= 0.015, "and the supply did not outlive it: the NOWAIT pass after the wait read the clock again");
+        }
+    }
+    ev_loop_destroy(l);
+}
+
+/* ---- the earliest deadline and the timer count, read without the loop (QB-190) ---- */
+static void test_timer_next(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer a, b;
+    ev_run(l, EVRUN_NOWAIT);
+    OK(*ev_timer_count_addr(l) == 0 && ev_timer_next(l) >= 1e12, "no timer: the count reads 0 and the earliest deadline is beyond any reading (1e12 s or more)");
+    ev_now_update(l);
+    ev_timer_init(&a, ns_cb, 3.0, 0.0); ev_timer_start(l, &a);
+    ev_timer_init(&b, ns_cb, 1.0, 0.0); ev_timer_start(l, &b);
+    {
+        ev_tstamp next = ev_timer_next(l), now = ev_clock_now();
+        OK(*ev_timer_count_addr(l) == 2, "the count follows ev_timer_start");
+        OK(next > now + 0.9 && next < now + 1.1, "the earliest deadline is the one-second timer's, on ev_clock_now's scale");
+        OK(next > now, "an embedder comparing its own reading sees the deadline ahead: nothing to fire this pass");
+    }
+    ev_timer_stop(l, &b);
+    OK(*ev_timer_count_addr(l) == 1 && ev_timer_next(l) > ev_clock_now() + 2.5, "stopping the earliest timer moves the deadline to the next one");
+    ev_now_set(l, ev_timer_next(l) + 0.001);                     /* the embedder's reading passes the deadline */
+    ns_fired = 0;
+    ev_run(l, EVRUN_NOWAIT);
+    OK(ns_fired == 1 && *ev_timer_count_addr(l) == 0 && ev_timer_next(l) >= 1e12, "a reading at or past the deadline means due: the pass fires it, and the count and the deadline read empty again");
+    ev_loop_destroy(l);
+}
+
+#if EV_ASYNC_ENABLE
+/* ---- a wake that no pass has delivered, read without the loop (QB-190) ---- */
+static int wp_hits;
+static void wp_cb(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)w; (void)r; ++wp_hits; }
+static void test_wake_pending(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_async a;
+    ev_async_init(&a, wp_cb); ev_async_start(l, &a);
+    ev_run(l, EVRUN_NOWAIT);
+    OK(*ev_wake_pending_addr(l) == 0, "nothing sent: no wake pending");
+    ev_async_send(l, &a);                                        /* between passes: the flag path */
+    OK(*ev_wake_pending_addr(l) != 0, "an ev_async_send between two passes is a pending wake an embedder can read inline");
+    wp_hits = 0;
+    ev_run(l, EVRUN_NOWAIT);
+    OK(wp_hits == 1 && *ev_wake_pending_addr(l) == 0, "the pass that delivers it clears the flag");
+    ev_async_stop(l, &a);
+    ev_loop_destroy(l);
+}
+#endif
+
 /* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
 /* On Windows libev read both its clocks from GetSystemTimeAsFileTime, the system tick -- 1 to
  * 15.6 ms steps -- and judged every timer against it; qev reads QueryPerformanceCounter. A
@@ -637,17 +744,25 @@ int main(void) {
     test_nowait_clock();
     test_clock_resolution();
     test_nopoll();
+    test_now_set();
+    test_timer_next();
+#if EV_ASYNC_ENABLE
+    test_wake_pending();
+#else
+    SKIP("wake pending (ev_wake_pending_addr)", "async watchers compiled out");
+#endif
     test_real_fork();
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Thirty-five checks are unconditional in every profile on every platform (only the
-       cross-thread async cases, the fork case, the signal half of the NOWAIT cases and the
-       pipe halves of the io-count and NOPOLL cases can legitimately skip, and the backend
-       probe skips only where every backend exists, which no platform has). A run below that
-       floor measured nothing and must not read as a pass. */
-    if (g_run < 35) {
-        printf("== FAIL: only %d checks ran; at least 35 are unconditional ==\n", g_run);
+    /* Forty-eight checks are unconditional in every profile on every platform (only the
+       cross-thread async cases, the fork case, the signal half of the NOWAIT cases, the pipe
+       halves of the io-count and NOPOLL cases and the wake-pending case of a profile without
+       async watchers can legitimately skip, and the backend probe skips only where every backend
+       exists, which no platform has). A run below that floor measured nothing and must not read
+       as a pass. */
+    if (g_run < 48) {
+        printf("== FAIL: only %d checks ran; at least 48 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

@@ -935,6 +935,30 @@ the current time is a good idea.
 
 See also L</The special problem of time updates> in the C<ev_timer> section.
 
+=item ev_now_set (loop, ev_tstamp mono)
+
+qev. The embedder hands the loop a reading of C<ev_clock_now ()> it already
+made -- qb's core reads the monotonic clock on its idle passes for its own
+park policy -- and the next C<EVRUN_NOWAIT> pass reads no clock of its own:
+its tail time update, the one read a non-blocking pass still makes, stands
+down for that ONE pass. Timers are judged against the supplied time, so a
+sample ahead of the wall clock fires a timer at once and a sample behind it
+delays one; a sample older than the loop's time is ignored, the loop's clock
+never stepping back; a pass that blocks always re-reads, since it slept. The
+realtime clock (C<ev_now>) follows the sample the way the loop's own update
+derives it. Call it right before the pass it is meant for: a supply that
+outlives its pass makes a later pass judge timers against an old time.
+Without a monotonic clock there is nothing to supply, and the call is a
+plain C<ev_now_update>.
+
+=item ev_tstamp ev_clock_now ()
+
+qev. The monotonic clock the loop's timers run on -- C<CLOCK_MONOTONIC>,
+C<QueryPerformanceCounter> on Windows -- as C<ev_run> itself reads it: the
+sample C<ev_now_set> takes, and the scale C<ev_timer_next> answers on.
+Before the first loop exists the monotonic probe has not run and this reads
+the realtime clock, as C<ev_run> would then.
+
 =item ev_suspend (loop)
 
 =item ev_resume (loop)
@@ -1219,6 +1243,30 @@ first says whether a poll would look at anything, the second, compared
 across passes, whether the last poll found something -- the two inputs of
 a poll cadence that stays at one poll per pass while a descriptor is busy
 and backs off while it is quiet.
+
+=item const int *ev_timer_count_addr (loop)
+
+=item ev_tstamp ev_timer_next (loop)
+
+=item const EV_ATOMIC_T *ev_wake_pending_addr (loop)
+
+qev. The three remaining inputs of an embedder that decides, per pass,
+whether the loop has anything to do at all -- and does not call C<ev_run>
+when it has not. The first is the number of active C<ev_timer> watchers,
+read inline. The second is the earliest deadline the loop holds, on the
+clock C<ev_clock_now ()> reads: the top of the timer heap, and of the
+periodic heap brought onto the monotonic scale when periodics are compiled
+in; a value no reading can reach (C<1e13> seconds or more) when it holds
+none. C<timers_reify> fires a timer once the loop's time has passed its
+deadline, so a deadline at or before the embedder's reading is due, one
+after it is not. The third is the address of the flag C<ev_async_send>
+(and a signal) raises from any thread while no pass wanted the wake pipe
+written -- the loop was not blocking -- cleared by the pass that delivers
+it: an embedder that skips passes runs one while it is set. With
+C<ev_pending_count_addr> (an event fed since the last pass) and
+C<ev_io_count_addr> (a poll to make), that is every reason a non-blocking
+pass could have to enter the loop; qb 3.2's core pays a few loads for a
+pass with none, where it paid the loop's clock read and bookkeeping.
 
 =item ev_set_invoke_pending_cb (loop, void (*invoke_pending_cb)(EV_P))
 

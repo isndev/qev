@@ -12,6 +12,7 @@ ev_child_stop
 ev_cleanup_start
 ev_cleanup_stop
 ev_clear_pending
+ev_clock_now
 ev_default_loop
 ev_default_loop_ptr
 ev_depth
@@ -40,6 +41,7 @@ ev_loop_destroy
 ev_loop_fork
 ev_loop_new
 ev_now
+ev_now_set
 ev_now_update
 ev_once
 ev_pending_count
@@ -70,6 +72,8 @@ ev_supported_backends
 ev_suspend
 ev_time
 ev_timer_again
+ev_timer_count_addr
+ev_timer_next
 ev_timer_remaining
 ev_timer_start
 ev_timer_stop
@@ -78,3 +82,4 @@ ev_userdata
 ev_verify
 ev_version_major
 ev_version_minor
+ev_wake_pending_addr

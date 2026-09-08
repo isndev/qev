@@ -19,6 +19,13 @@
  *   arm           ev_timer_start + ev_timer_stop of a 500 ms timer, mn_now as it is
  *   arm+now       the same preceded by ev_now_update, as qb's awaiters do
  *   now           ev_now_update alone
+ *   timer+set     the timer shape with the embedder supplying the clock: ev_clock_now () +
+ *                 ev_now_set () before each pass, so the pass reads none of its own (QB-190)
+ *   timer+set0    the same with a free sample (a counter the embedder already has): the loop's
+ *                 bookkeeping floor for a pass given its time
+ *   gate          no ev_run at all: what an embedder pays per pass to decide the loop has
+ *                 nothing to fire -- *ev_timer_count_addr, ev_timer_next against its reading,
+ *                 *ev_wake_pending_addr (the pass qb skips when a far timer is all it holds)
  *
  *   qev-bench-pass [passes=2000000] [shape ...]      (no shape = all)
  */
@@ -57,6 +64,37 @@ static double run_passes(struct ev_loop *l, long passes) {
     for (i = 0; i < 1000; ++i) ev_run(l, EVRUN_NOWAIT); /* warm */
     t0 = now_ns();
     for (i = 0; i < passes; ++i) ev_run(l, EVRUN_NOWAIT);
+    return (now_ns() - t0) / (double) passes;
+}
+
+static double run_passes_set(struct ev_loop *l, long passes, int free_sample) {
+    long      i;
+    double    t0;
+    ev_tstamp sample = ev_clock_now();
+    for (i = 0; i < 1000; ++i) { ev_now_set(l, ev_clock_now()); ev_run(l, EVRUN_NOWAIT); } /* warm */
+    t0 = now_ns();
+    if (free_sample)
+        for (i = 0; i < passes; ++i) { sample += 1e-9; ev_now_set(l, sample); ev_run(l, EVRUN_NOWAIT); }
+    else
+        for (i = 0; i < passes; ++i) { ev_now_set(l, ev_clock_now()); ev_run(l, EVRUN_NOWAIT); }
+    return (now_ns() - t0) / (double) passes;
+}
+
+static volatile int gate_sink;
+static double run_gate(struct ev_loop *l, long passes) {
+    long              i;
+    double            t0;
+    const int        *timers = ev_timer_count_addr(l);
+    const EV_ATOMIC_T *wake  = ev_wake_pending_addr(l);
+    ev_tstamp         sample = ev_clock_now();
+    int               due    = 0;
+    for (i = 0; i < 1000; ++i) due += (*wake != 0) || (*timers && ev_timer_next(l) <= sample); /* warm */
+    t0 = now_ns();
+    for (i = 0; i < passes; ++i) {
+        sample += 1e-9;
+        due += (*wake != 0) || (*timers && ev_timer_next(l) <= sample);
+    }
+    gate_sink = due;
     return (now_ns() - t0) / (double) passes;
 }
 
@@ -104,6 +142,17 @@ int main(int argc, char **argv) {
         }
     }
 #endif
+    if (want(argc, argv, "timer+set") || want(argc, argv, "timer+set0") || want(argc, argv, "gate")) {
+        struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+        ev_timer t; ev_timer_init(&t, never_cb, 3600.0, 0.0); ev_timer_start(l, &t);
+        if (want(argc, argv, "timer+set"))
+            printf("  %-10s %8.1f   (ev_clock_now + ev_now_set + ev_run)\n", "timer+set", run_passes_set(l, passes, 0));
+        if (want(argc, argv, "timer+set0"))
+            printf("  %-10s %8.1f   (a free sample: ev_now_set + ev_run)\n", "timer+set0", run_passes_set(l, passes, 1));
+        if (want(argc, argv, "gate"))
+            printf("  %-10s %8.1f   (no ev_run: timer count, ev_timer_next, wake flag)\n", "gate", run_gate(l, passes));
+        ev_timer_stop(l, &t); ev_loop_destroy(l);
+    }
     if (want(argc, argv, "arm") || want(argc, argv, "arm+now") || want(argc, argv, "now")) {
         struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
         ev_timer t; ev_timer_init(&t, never_cb, 0.5, 0.0);

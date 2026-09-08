@@ -47,6 +47,27 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Added
 
+- **`ev_now_set(loop, mono)`, `ev_clock_now()`, `ev_timer_count_addr(loop)`, `ev_timer_next(loop)`
+  and `ev_wake_pending_addr(loop)` (Huly QB-190):** the embedder owns the pass. `ev_now_set` hands
+  the loop a reading of its own clock (`ev_clock_now`, the monotonic clock the timers run on), and
+  the next `EVRUN_NOWAIT` pass reads none: its tail time update stands down for that one pass
+  (timers are judged against the supplied time; an older sample is ignored, the loop's clock never
+  steps back; a blocking pass always re-reads; the realtime clock follows the sample as the loop's
+  own update derives it). The other three are what an embedder reads, inline, to decide that a
+  pass has nothing to do and skip `ev_run` altogether: the active timer count, the earliest
+  deadline on `ev_clock_now`'s scale (beyond any reading when none), and the flag an
+  `ev_async_send` or a signal raises from another thread while no pass was blocking. With the
+  pending counts and the io count that is every reason a non-blocking pass could have to enter
+  the loop. Measured (`bench-pass`): a pass over one far timer costs 21.8 ns on g++-14 / 28.6 on
+  MSVC; given a free sample (`timer+set0`) 10.3 / 15.0 — the loop's bookkeeping floor; the
+  embedder's gate alone (`gate`: count, deadline, flag) 1.8 / 0.8. qb 3.2's cores skip the pass:
+  a busy core with a far timer 36.6 → 26.3 ns per pass on g++, a quiet socket between two polls
+  48.0 → 27.5. `tests/test-loops.c`: `test_now_set` (a fresh supply does not fire a far timer, a
+  supply ahead fires it at once, an older supply is ignored, a supply stands for one pass, a
+  blocking pass sleeps and re-reads), `test_timer_next` (count and deadline follow start / stop,
+  a reading at the deadline means due), `test_wake_pending` (set by a send between passes,
+  cleared by the pass that delivers it); unconditional floor 35 → 48. Exports: 85 `ev_*` on POSIX,
+  84 on Windows.
 - **`EVRUN_NOPOLL`, `ev_io_count_addr(loop)` and `ev_io_fed_addr(loop)` (Huly QB-191):** the
   embedder owns the io cadence. A non-blocking pass with the flag reifies timers and periodics
   and invokes every pending event exactly as before and only leaves the backend call out; a pass
@@ -63,6 +84,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **Windows: the `QueryPerformanceCounter` clock of QB-193 was never compiled in (Huly
+  QB-195).** libev's "fixes any misconfiguration" block reads `#ifndef CLOCK_MONOTONIC` and
+  forces `EV_USE_MONOTONIC` to 0 — and MSVC has no `CLOCK_MONOTONIC` — 450 lines after QB-193 had
+  set it to 1 for `_WIN32`. So `get_clock` was `ev_time`, the loop's "monotonic" time was the
+  precise SYSTEM time (QB-193's other half), stepped by every wall-clock adjustment, and the
+  QPC path was dead code in the standalone and in qb's copy alike; `test_clock_resolution` could
+  not tell, a precise system clock also moving a thousand times in 50 ms without stepping back
+  inside them. The first `ev_now_set` case did: `ev_clock_now()` read Unix seconds. The block
+  now exempts Windows. Measured after: `ev_clock_now` reads the uptime scale, `ev_now` the
+  interpolated realtime, and `bench-pass`'s `timer` shape 31.5 → 28.6 ns (QPC is the cheaper
+  read). The figures QB-193 published (a pass 15.8 → 31 ns, a timer arm 5.8 → 24) were those of
+  the precise system time; its precision claim held, its monotonicity claim did not until now.
 - **The wepoll suite measured nothing: its five cases passed on `fd_kill`'s `EV_ERROR`, never
   through wepoll (Huly QB-194).** `tests/test-wepoll.c` wrote `ev_io_init(&w, cb, (int)sock,
   EV_READ)` — a raw winsock `SOCKET` as the fd, registered nowhere in the `SOCKET ↔ fd`

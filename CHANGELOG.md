@@ -8,6 +8,31 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Changed
 
+- **The epoll backend asks the kernel for a blocking wait in nanoseconds (Huly QB-196).**
+  `epoll_wait` takes whole milliseconds and libev rounds UP (`EV_TS_TO_MSEC`, plus a
+  `backend_mintime` of 1 ms), so a wait bounded under a millisecond -- an embedder parking its
+  thread for 100 µs, a timer 200 µs away -- slept a full one. Measured in qb 3.2's core on WSL2
+  g++-14 (Linux 6.6) with qb-vs-others' `parked-timer-wake` probe: a 100 µs timer on a parked
+  core fired 1010 µs late at p50, a 1 ms one 110 µs late, a 5 ms one reached through 1 ms parks
+  357 µs late, against 0.1 µs on a spinning core. On Linux 5.11 or newer with a libc that declares
+  it (glibc 2.35), `epoll_poll` now waits through `epoll_pwait2`, a `struct timespec` the kernel
+  honours to the thread's timer slack (50 µs by default, `prctl(PR_SET_TIMERSLACK)`); the kernel
+  is asked once per loop at init (`epoll_have_pwait2`, a loop variable rather than a static so two
+  loops initialised on two threads never race), an older one answering `ENOSYS` keeps
+  `epoll_wait` and the millisecond minimum, and a NOWAIT poll keeps `epoll_wait` on every kernel
+  -- both enter the same path and `epoll_wait` copies nothing in, so the non-blocking pass measured
+  at its floor (QB-188) pays nothing. `EV_USE_EPOLL_PWAIT2` is the switch, derived like every
+  other `EV_USE_*` (CMake `check_symbol_exists`, autotools `AC_CHECK_FUNCS`, or the glibc version
+  when neither ran). Windows compiles the same backend over wepoll, whose `epoll_wait` is the
+  millisecond one, and keeps it -- and there the measurement refuted the premise the issue was
+  filed on: with the system timer resolution read at 15.625 ms, a 1 ms wepoll wait returned in
+  1.0–1.5 ms at p50 and 2.4 ms at p99, `timeBeginPeriod(1)` changing nothing (the kernel's waits
+  are tickless; its coalescing is the +0.5–1.5 ms), so no high-resolution timer was pursued. The
+  io_uring backend keeps libev's 1 ms `backend_mintime` on its timespec wait, unmeasured -- the
+  recorded gap. `tests/test-loops.c` `test_epoll_ns_wait` pins it: a blocking run over a 200 µs
+  timer, the best of twenty rounds under 800 µs (257 µs measured), a SKIP where the libc or the
+  kernel lacks the call; its negative control -- the nanosecond path switched off after the probe
+  -- fails it at 1058 µs.
 - **The reduced watcher profile keeps `async`.** `QB_EV_WATCHERS_FULL=OFF` used to compile out
   seven families; it now compiles out six — idle, prepare, check, fork, child, embed — and
   leaves `ev_async_start/stop/send` in. An embedder that parks a thread inside `ev_run` needs

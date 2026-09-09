@@ -32,6 +32,10 @@ static void msleep(int ms) { struct timespec ts = { ms / 1000, (ms % 1000) * 100
 # include <windows.h>
 static void msleep(int ms) { Sleep((DWORD) ms); }
 #endif
+#if defined(__linux__) && EV_USE_EPOLL_PWAIT2
+# include <errno.h>
+# include <sys/epoll.h>
+#endif
 
 static int g_fail = 0, g_run = 0, g_skip = 0;
 #define OK(cond, name)   do { ++g_run; if (cond) printf("  PASS  %s\n", (name)); else { printf("  FAIL  %s\n", (name)); ++g_fail; } } while (0)
@@ -829,6 +833,46 @@ static void test_iouring_blocking_timer(void) {
     OK(tick_fired == 1 && dt >= 0.015 && dt <= 0.5, name);
     ev_loop_destroy(l);
 }
+
+/* ---- epoll: a blocking wait under a millisecond is honoured under a millisecond (QB-196) ---- */
+/* epoll_wait takes whole milliseconds and libev rounds UP, so a blocking run over a 200 us timer
+ * slept a full millisecond on this backend: measured in qb's core, a 100 us timer on a parked
+ * thread fired 1010 us late. Through epoll_pwait2 the kernel honours a timespec to the thread's
+ * timer slack (50 us by default). Twenty rounds and the MINIMUM kept: the millisecond path cannot
+ * return before 1 ms, so one round under 800 us is the nanosecond path and nothing else, and a
+ * loaded host only ever moves a round upward. The kernel is asked first, the same question the
+ * loop asks at init: one without epoll_pwait2 (< 5.11) makes the case a SKIP, never a FAIL. */
+static void test_epoll_ns_wait(void) {
+    const char *name = "epoll: a blocking run over a 200 us timer returns under 800 us at least once in 20 (epoll_pwait2 -- QB-196)";
+#if EV_USE_EPOLL_PWAIT2
+    struct ev_loop *l; ev_timer t; ev_tstamp best = 1.0; int i;
+    if (!(ev_supported_backends() & EVBACKEND_EPOLL)) { SKIP(name, "epoll not compiled in"); return; }
+    {
+        struct timespec zero = {0, 0}; struct epoll_event e[1];
+        int fd = epoll_create1(0), r = fd >= 0 ? epoll_pwait2(fd, e, 1, &zero, 0) : -1;
+        int enosys = r < 0 && errno == ENOSYS;
+        if (fd >= 0) close(fd);
+        if (enosys) { SKIP(name, "the kernel has no epoll_pwait2 (Linux < 5.11)"); return; }
+    }
+    l = ev_loop_new(EVBACKEND_EPOLL | EVFLAG_NOENV);
+    if (!l || ev_backend(l) != EVBACKEND_EPOLL) { SKIP(name, "epoll unavailable at runtime"); if (l) ev_loop_destroy(l); return; }
+    for (i = 0; i < 20; ++i) {
+        ev_tstamp t0, dt;
+        tick_fired = 0;
+        ev_timer_init(&t, tick_cb, 0.0002, 0.0); ev_timer_start(l, &t);
+        t0 = ev_time();
+        ev_run(l, 0);
+        dt = ev_time() - t0;
+        ev_timer_stop(l, &t);
+        if (tick_fired == 1 && dt < best) best = dt;
+    }
+    printf("        blocking run over a 200 us timer under epoll: the best of 20 returned after %.0f us\n", best * 1e6);
+    OK(best < 0.0008, name);
+    ev_loop_destroy(l);
+#else
+    SKIP(name, "epoll_pwait2 not declared by this libc (glibc < 2.35)");
+#endif
+}
 #endif
 
 /* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
@@ -927,6 +971,7 @@ int main(void) {
 #ifdef __linux__
     test_iouring_quiet_nowait();
     test_iouring_blocking_timer();
+    test_epoll_ns_wait();
 #endif
     test_real_fork();
 
@@ -934,10 +979,11 @@ int main(void) {
 
     /* Forty-eight checks are unconditional in every profile on every platform (only the
        cross-thread async cases, the fork case, the signal half of the NOWAIT cases, the pipe
-       halves of the io-count and NOPOLL cases and the wake-pending case of a profile without
-       async watchers can legitimately skip, and the backend probe skips only where every backend
-       exists, which no platform has). A run below that floor measured nothing and must not read
-       as a pass. */
+       halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
+       async watchers and the nanosecond epoll wait on a libc or kernel without epoll_pwait2
+       can legitimately skip, and the backend probe skips only where every backend exists,
+       which no platform has). A run below that floor measured nothing and must not read as a
+       pass. */
     if (g_run < 48) {
         printf("== FAIL: only %d checks ran; at least 48 are unconditional ==\n", g_run);
         return 1;

@@ -6,7 +6,7 @@ dnl libev support
 AC_CHECK_HEADERS(sys/inotify.h sys/epoll.h sys/event.h port.h poll.h sys/timerfd.h)
 AC_CHECK_HEADERS(sys/select.h sys/eventfd.h sys/signalfd.h linux/aio_abi.h linux/fs.h)
  
-AC_CHECK_FUNCS(inotify_init epoll_ctl kqueue port_create poll select eventfd signalfd)
+AC_CHECK_FUNCS(inotify_init epoll_ctl epoll_pwait2 kqueue port_create poll select eventfd signalfd)
  
 AC_CHECK_FUNCS(clock_gettime, [], [
    dnl on linux, try syscall wrapper first

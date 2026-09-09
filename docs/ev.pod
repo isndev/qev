@@ -637,6 +637,15 @@ Epoll is truly the train wreck among event poll mechanisms, a frankenpoll,
 cobbled together in a hurry, no thought to design or interaction with
 others. Oh, the pain, will it ever stop...
 
+qev asks the kernel for a blocking wait in nanoseconds where it can:
+C<epoll_wait> takes whole milliseconds and libev rounds up, so a timeout
+under a millisecond -- a timer 200 us away, an embedder parking its
+thread for 100 us -- used to sleep a full one. On Linux 5.11 or newer
+the wait goes through C<epoll_pwait2> and is honoured to the thread's
+timer slack (50 us by default, C<prctl (PR_SET_TIMERSLACK)>); the kernel
+is asked once at loop initialisation and an older one keeps
+C<epoll_wait>. See C<EV_USE_EPOLL_PWAIT2>.
+
 While stopping, setting and starting an I/O watcher in the same iteration
 will result in some caching, there is still a system call per such
 incident (because the same I<file descriptor> could point to a different
@@ -4914,6 +4923,17 @@ C<epoll>(7) backend. Its availability will be detected at runtime,
 otherwise another method will be used as fallback. This is the preferred
 backend for GNU/Linux systems. If undefined, it will be enabled if the
 headers indicate GNU/Linux + Glibc 2.4 or newer, otherwise disabled.
+
+=item EV_USE_EPOLL_PWAIT2
+
+If defined to be C<1>, the epoll backend makes its blocking waits through
+C<epoll_pwait2>(2), which takes a C<struct timespec>, so a timeout under
+a millisecond is honoured to the thread's timer slack instead of being
+rounded up to a whole millisecond; kernel support (Linux 5.11) is probed
+once per loop and an older kernel falls back to C<epoll_wait>. If
+undefined, it will be enabled if the headers indicate GNU/Linux + Glibc
+2.35 or newer (the first libc to declare the function), otherwise
+disabled. Requires C<EV_USE_EPOLL>.
 
 =item EV_USE_LINUXAIO
 

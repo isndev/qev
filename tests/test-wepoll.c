@@ -16,7 +16,7 @@
  *      stop / set / start cycle. Upstream's ev_io_modify() was a macro writing
  *      w->events in memory and never re-registering with wepoll, so a keep-alive
  *      that widened its interest set never learned the socket was writable
- *      (fixed in e8090ecc).
+ *      (fixed in 87bb2e03).
  *   3. EPOLLRDHUP half-close: the peer's shutdown(SD_SEND) surfaces as
  *      EV_READ with recv() == 0.
  *   4. 64 concurrent pairs: every watcher fires (the SOCKET<->fd registry
@@ -151,7 +151,7 @@ static void modify_once(int use_cycle, const char *name) {
     closesocket(a); closesocket(b);
 }
 static void test_modify_regression(void) {
-    modify_once(0, "widening a live watcher's interest set with ev_io_modify reaches wepoll (the e8090ecc regression)");
+    modify_once(0, "widening a live watcher's interest set with ev_io_modify reaches wepoll (the 87bb2e03 regression)");
     modify_once(1, "widening it through stop / ev_io_set_sock / start reaches wepoll too");
 }
 

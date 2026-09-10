@@ -184,7 +184,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   never looked at `revents` took the kill for a delivery (`recv()` on the raw value still
   worked: the kill leaves the socket itself intact). Measured on MSVC 19.51: `revents`
   0x80000003 in every case, the loop's io count 0 after the pass, the backend never consulted —
-  including case 2, the `e8090ecc` regression the fork exists for. The sockets go through
+  including case 2, the `87bb2e03` regression the fork exists for. The sockets go through
   `ev_io_init_sock` / `ev_io_set_sock` now and callbacks read `w->handle`; every verdict
   requires `EV_ERROR` absent (a kill is a failure, never a delivery), case 1 also asserts the
   watcher is still active afterwards, case 2 covers both `ev_io_modify` in place and the

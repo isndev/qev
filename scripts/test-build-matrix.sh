@@ -137,7 +137,7 @@ int main() {
     // Flush that registration all the way into the backend FIRST. Without this the retarget
     // below is masked -- start() only MARKS the fd changed, and the pending fd_reify() would
     // read the already-updated mask and register the right thing even with the defect present.
-    // Measured: the control planted the pre-e8090ecc body and this cell still passed until the
+    // Measured: the control planted the pre-87bb2e03 body and this cell still passed until the
     // pump was added, i.e. it was testing nothing.
     loop.run(EVRUN_NOWAIT);
 

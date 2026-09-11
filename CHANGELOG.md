@@ -109,6 +109,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **The CMake build no longer dies on a Windows host that has Git for Windows' `pod2man` on its
+  PATH (Huly QB-211).** `find_program(pod2man)` accepted `Git/usr/bin/core_perl/pod2man` -- a
+  `#!/usr/bin/perl` script with no extension, which CreateProcess cannot start -- and the
+  `qev-man` target being `ALL`, `cmake --build` stopped at "Generating qev.3" with the library
+  and the three test binaries never built (ctest: 3 "Not Run"); the same tree configured, built
+  and passed 3/3 the moment that directory left the PATH, which is the CI runner's shape and why
+  `windows-msvc` never saw it. Running the script through the MSYS perl beside it is no answer
+  either (from cmd.exe its @INC is MSYS paths: "Can't locate Pod/Man.pm"). On Windows only a
+  native `pod2man` (`.exe`/`.bat`/`.cmd`, Strawberry Perl's for instance) renders the page now; a
+  script is reported at configure time and the page skipped -- it is decorative, the library is
+  the deliverable. POSIX is unchanged: the kernel runs the shebang and `qev.3` is generated and
+  installed as before. Measured on Windows 11 / MSVC 19.51, both PATH shapes, same session.
+
 - **io_uring: from 47× slower than epoll on a quiet fd to parity (Huly QB-81).** Measured for
   the first time against `epoll` on the same loop, the io_uring backend ran an embedder's
   non-blocking pass over one quiet socket at **1345 ns against 28.5** — a self-perpetuating

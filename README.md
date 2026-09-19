@@ -209,7 +209,8 @@ cmake --install build --prefix /usr/local
 | `BUILD_SHARED_LIBS`        | `OFF`   | Shared `libqev.so`/`.dylib` instead of a static one.  |
 | `BUILD_TESTING`            | `ON`    | Standard CMake switch; gates the test target.         |
 | `QB_EV_STRICT_WARNINGS`    | `ON`    | Strict GCC/Clang warning set.                         |
-| `QB_EV_USE_TIMERFD`        | `ON`    | Linux `timerfd` for time-jump detection.              |
+| `QB_EV_USE_TIMERFD`        | `OFF`   | Linux `timerfd` for time-jump detection (a timerfd with no timer armed stalls `epoll_wait`; opt in). |
+| `QB_EV_USE_LINUXAIO`       | `OFF`   | Compile the Linux aio backend in (experimental upstream, never recommended; opt in). |
 | `QB_EV_WATCHERS_FULL`      | `ON`\*  | All fourteen watcher families (`OFF` keeps `async`).  |
 | `QB_EV_LIBEVENT_COMPAT`    | `OFF`   | Build the libevent shim — see [below](#coexisting-with-libev). |
 | `QB_EV_BUILD_BENCHMARKS`   | `ON`\*  | Cross-backend benchmark.                              |

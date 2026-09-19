@@ -8,6 +8,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Changed
 
+- **The library a build with no configuration header gets is libev's, not qb's profile.** `ev.h`'s
+  own `#ifndef` defaults pinned idle, prepare, check, fork, child, async and embed to 0 -- qb's
+  seven-family profile, demoted from libev's `EV_FEATURE_WATCHERS` into a trailing comment. The
+  CMake builds never saw it (the generated `ev_config.h` is included first and decides), but the
+  autotools build defines no `EV_*` at all, so `./configure && make` shipped a `libqev` without six
+  watcher families and without `ev_async`. The defaults are libev's again; `config.h.cmakein` is
+  what narrows the embedded profile, and the watcher suite now refuses to compile against a
+  standalone library missing a family (`QEV_EXPECT_FULL_WATCHERS`, set from
+  `QB_EV_WATCHERS_FULL`).
+- **The Linux aio backend is opt-in, as in libev** (`QB_EV_USE_LINUXAIO`, default OFF): the
+  presence of `<linux/aio_abi.h>` used to compile it in. The dead `EV_USE_WSAPOLL` switch, which
+  no source ever read, is gone from the generated header.
 - **The epoll backend asks the kernel for a blocking wait in nanoseconds (Huly QB-196).**
   `epoll_wait` takes whole milliseconds and libev rounds UP (`EV_TS_TO_MSEC`, plus a
   `backend_mintime` of 1 ms), so a wait bounded under a millisecond -- an embedder parking its

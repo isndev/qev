@@ -10,6 +10,17 @@
  * watcher fails (instead of hanging). Exits non-zero if any check fails.
  */
 #include <qev/ev.h>
+/* QB_EV_WATCHERS_FULL=ON (the standalone default) must have built every family the platform has:
+ * the cases below are #if-gated per family and would simply vanish, and a suite that says PASS
+ * over a library missing half of libev's API is worse than one that does not compile. */
+#if defined(QEV_EXPECT_FULL_WATCHERS) && QEV_EXPECT_FULL_WATCHERS
+# if !(EV_IDLE_ENABLE && EV_PREPARE_ENABLE && EV_CHECK_ENABLE && EV_FORK_ENABLE && EV_ASYNC_ENABLE && EV_EMBED_ENABLE)
+#  error "QB_EV_WATCHERS_FULL is ON but a watcher family is disabled: the standalone qev must build all of libev"
+# endif
+# if !defined(_WIN32) && !EV_CHILD_ENABLE
+#  error "QB_EV_WATCHERS_FULL is ON on a POSIX host but EV_CHILD_ENABLE is 0"
+# endif
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -7,7 +7,7 @@
 ![platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20BSD%20%7C%20illumos-lightgrey.svg)
 ![build systems](https://img.shields.io/badge/build-CMake%20%7C%20autotools-orange.svg)
 
-**A high-performance event loop for C — libev's API, maintained.**
+**An event loop for C — libev's API, maintained.**
 
 `qev` is an event loop library: you register interest in file descriptors, timers,
 signals and child processes, and it tells you when something happened, using the best
@@ -72,10 +72,13 @@ warning-clean under a strict GCC/Clang flag set and passes ASan/UBSan.
 - [Packaging](#packaging)
 - [Coexisting with libev](#coexisting-with-libev)
 - [Threading model](#threading-model)
+- [What the fork adds to the API](#what-the-fork-adds-to-the-api)
+- [The standalone feature set](#the-standalone-feature-set)
 - [Performance](#performance)
 - [Need more than an event loop?](#need-more-than-an-event-loop)
 - [FAQ](#faq)
 - [Credits](#credits)
+- [Contributing](#contributing)
 - [License](#license)
 
 ## Install
@@ -110,14 +113,16 @@ optional C++ wrapper is header-only.
 
 | Platform               | Default (auto)        | Also available                          | Last resort |
 |------------------------|-----------------------|-----------------------------------------|-------------|
-| Linux                  | `epoll`               | `io_uring`, `linuxaio` (opt-in), `poll` | `select`    |
+| Linux                  | `epoll`               | `io_uring`, `poll`; `linuxaio` if built in | `select`    |
 | macOS / FreeBSD / *BSD | `kqueue`              | `poll`                                  | `select`    |
 | Solaris / illumos      | event `port`          | `poll`                                  | `select`    |
 | Windows                | `epoll` (wepoll/IOCP) | —                                       | `select`    |
 
 Selection always prefers the most scalable mechanism available and reaches `select`
-only when nothing else can be created. `io_uring` and `linuxaio` are compiled when the
-kernel headers are present but are **not** auto-selected — see the FAQ.
+only when nothing else can be created. `io_uring` is compiled when the kernel headers are
+present and `linuxaio` only on request (`QB_EV_USE_LINUXAIO`, as libev keeps it off); neither
+is auto-selected — see the FAQ. On Linux 5.11 or newer with glibc 2.35 the epoll backend
+blocks through `epoll_pwait2`, so a wait is honoured in nanoseconds, not whole milliseconds.
 
 ## Using it
 
@@ -157,9 +162,9 @@ ev::get_default_loop().run();
 
 ### Reference
 
-The complete API manual is [`docs/ev.pod`](docs/ev.pod) — libev's own, which applies
-verbatim. Either build renders it as `qev.3` and installs it under `man3`, provided
-`pod2man` is on the system.
+The complete API manual is [`docs/ev.pod`](docs/ev.pod) — libev's own, with the fork's
+additions documented in place. Either build renders it as `qev.3` and installs it under
+`man3`, provided `pod2man` is on the system.
 
 ## Choosing a backend at runtime
 
@@ -174,26 +179,97 @@ and falling back is a two-line pattern rather than a build-time decision.
 
 ## What is new since libev 4.33
 
-Around **70 substantive changes**, plus a hardened wepoll 1.5.8. Semantics and struct
-layouts are libev's — this is maintenance, not a redesign.
+**64 recorded changes** — 45 in 5.0, 19 in 5.1 — plus a hardened wepoll 1.5.8. Semantics
+and struct layouts are libev's; this is maintenance, not a redesign.
+
+The backends:
 
 - **`io_uring` rewritten from scratch** — kernel-ABI based, ring-layout validation,
-  CQ-overflow recovery, `MAP_POPULATE` fallback, bounded drain/spin/EINTR budgets, and
-  full cleanup on every init-failure path.
+  CQ-overflow recovery, `MAP_POPULATE` fallback, bounded drain/spin/EINTR budgets, full
+  cleanup on every init-failure path — and, in 5.1, **measured against `epoll` on the same
+  loop and brought to parity**: a non-blocking pass over one quiet socket cost 1345 ns
+  against 28.3 because a deadline timerfd was re-armed at "now" on every poll; it now costs
+  25.8.
 - **Real native Windows support** — `epoll` via IOCP/wepoll with a thread-safe
-  `SOCKET ↔ fd` registry, plus five wepoll fixes of our own.
+  `SOCKET ↔ fd` registry, five wepoll fixes of our own, a wepoll test suite that runs
+  through wepoll rather than around it, and the loop's clocks on
+  `QueryPerformanceCounter` instead of the 15.6 ms system tick.
 - **`kqueue` on macOS and the BSDs** instead of `select`: no `FD_SETSIZE` ceiling,
   `O(active)` scaling.
+- **`epoll_pwait2`** on Linux 5.11+: a blocking wait asked for in nanoseconds, honoured to
+  the thread's timer slack — a parked loop meets a timer under a millisecond.
 - **`EPOLLRDHUP` TCP half-close** reported consistently across backends.
+
+The loop's contract:
+
+- **The non-blocking pass at its floor.** An `EVRUN_NOWAIT` pass — what an embedder that
+  drives the loop from its own scheduler pays on every turn — read the clock twice, raised
+  the wake-up handshake with a full fence and polled a backend with nothing to poll; a
+  timers-only loop now passes in 22 ns where it took 51, and a loop with no fd watcher pays
+  no backend poll at all.
+- **An embedder-supplied clock** (`ev_now_set`) and a pass that reads the clock once.
+- **Watcher counts the embedder can read without a call** (`ev_io_count_addr`,
+  `ev_timer_count_addr`, `ev_active_count_addr`, `ev_pending_count_addr`), so a scheduler
+  can decide whether to enter the loop at all.
+- **A wake protocol ThreadSanitizer accepts**: the cross-thread flags are atomic accesses,
+  and `ev.c` is built under the sanitizer presets of its embedder.
+
+Everything else:
+
 - **Genuine bug fixes** — use-after-close in `ev_loop_destroy`, kqueue registrations
   dropped on `EINTR`, broken win32 `accept()` detection, event-port and linuxaio
   descriptor leaks.
 - **Hardening throughout** — signed-overflow, alignment, fd-range and `EINTR` fixes;
   strict-aliasing-safe accessors; a compile-time ABI contract pinning watcher layout.
 - **Modern build** — CMake package config, pkg-config, CPack, component-aware install,
-  autotools kept and working; SPDX headers; MIT.
+  autotools kept and working and, since 5.1, building the same full library as CMake;
+  SPDX headers; MIT.
+- **Two test suites of its own** — watchers (every family, refusing to compile against a
+  standalone library missing one) and loop mechanics (multi-loop isolation, timer pacing,
+  priorities, `ev_feed_event`, a real `fork()`, a cross-thread `ev_async_send`, a thousand
+  concurrent timers, the io_uring/epoll parity check).
 
 [CHANGELOG.md](CHANGELOG.md) carries the complete, file-by-file list.
+
+## What the fork adds to the API
+
+Everything libev exports is here under its own name. These are the additions, all guarded
+by `EV_FEATURE_API` (on in every default build) and documented in [`docs/ev.pod`](docs/ev.pod):
+
+| Addition | What it is for |
+|---|---|
+| `ev_loop_new(backend)` returns `NULL` when that backend cannot be created | probe and fall back at run time, rather than decide at build time |
+| `ev_now_set(loop, mono)` and `ev_clock_now()` | an embedder that already read the clock hands it to the loop; a pass that was given one does not read it again |
+| `ev_active_count(loop)`, `ev_active_count_addr(loop)`, `ev_pending_count_addr(loop)` | is there anything for the loop to do — readable without a call, from the scheduler's own pass |
+| `ev_io_count(loop)`, `ev_io_count_addr(loop)`, `ev_io_fed_addr(loop)` | how many pollable fds the loop owns, and whether the last poll delivered anything |
+| `ev_timer_count_addr(loop)`, `ev_timer_next(loop)` | how many timers are armed and when the earliest is due, so a park can be bounded without a timer of its own |
+| `ev_wake_pending_addr(loop)` | whether an `ev_async_send` from another thread is waiting to be seen |
+| `EVRUN_NOPOLL` | a pass that dispatches what is pending and skips the backend poll |
+| `EV_NUMPRI` | the number of priority levels, as a constant |
+
+The C++ wrapper mirrors the counts on `ev::loop_ref` (`io_count()`, `active_count()`).
+
+## The standalone feature set
+
+A standalone build is **all of libev**: the fourteen watcher families (`child` on POSIX
+only — it is built on `waitpid`, which Windows does not have), every backend the platform
+offers, the C++ wrapper, the man page. The one deliberate divergence from libev's defaults is
+`timerfd`, off unless asked for (`QB_EV_USE_TIMERFD`): a timerfd with no timer armed stalls
+`epoll_wait`, measured. The watcher suite refuses to compile against a library missing a
+family, so a green `ctest` proves the set is whole.
+
+| What you get | Standalone (`cmake -S .`) | Embedded in qb (`add_subdirectory`) |
+|---|---|---|
+| watcher families | 14 (`QB_EV_WATCHERS_FULL=ON`) | 7: io, timer, periodic, signal, stat, cleanup, async |
+| backends | every one the platform has; `linuxaio` on request | the same |
+| `ev++.h` | installed | present |
+| libevent shim (`event.h`) | off, `QB_EV_LIBEVENT_COMPAT=ON` to build it | off |
+| tests, benchmark | built with `BUILD_TESTING` | not built |
+| install, CPack, `qev.pc`, `qevConfig.cmake` | yes | no (qb installs its own copy under `qb/ev/`) |
+
+`ev.h`'s own `#ifndef` defaults are libev's, so a build that carries no configuration header —
+an autotools build, or a consumer that lost the `ev_config.h` define — gets the whole library;
+the generated `ev_config.h` is what narrows the embedded profile, and it is included first.
 
 ## Building from source
 
@@ -300,6 +376,13 @@ on the current machine. On macOS `kqueue` stays flat into the tens of thousands 
 descriptors while `poll` collapses; on Linux `epoll` and `io_uring` are flat and
 comparable for readiness loops — which is why `io_uring` is not auto-selected.
 
+The other number that matters to an embedder is the cost of a pass that finds nothing: a
+timers-only `EVRUN_NOWAIT` pass costs **22 ns** on a Debian 13 / g++ 14 host (51 before 5.1),
+and a non-blocking pass over one quiet socket costs 25.8 ns under `io_uring` against
+28.3 under `epoll` (the io_uring backend paid 1345 before 5.1). The parity is guarded by
+`tests/test-loops.c`, which fails if a quiet non-blocking pass under `io_uring` costs more than
+twice epoll's again; the figures are the 5.1 CHANGELOG's measurements.
+
 ## Need more than an event loop?
 
 qev is the event-loop core of the **[qb Actor Framework](https://github.com/isndev/qb)** —
@@ -314,7 +397,7 @@ with them, already done and tested:
 - **Async I/O with C++20 coroutines.** `co_await` a socket, a timer, a query. TCP, UDP,
   TLS, QUIC, files, with transports and protocols that compose.
 - **Protocol modules.** HTTP/1.1, HTTP/2, HTTP/3 and WebSocket; PostgreSQL; Redis —
-  each a first-class library, not a sample.
+  each a library with its own tests and book, not a sample.
 
 If you are writing C and want an event loop, qev is the whole answer. If you are writing
 C++ and find yourself about to write a connection manager, a thread pool and a protocol
@@ -343,8 +426,9 @@ reproduced in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES). Both licences are perm
 and compatible.
 
 **Why isn't `io_uring` the default on Linux?**
-For *readiness-style* loops — the libev model — `io_uring` is not measurably faster
-than `epoll`, and it adds complexity and kernel-version sensitivity. It is built when
+For *readiness-style* loops — the libev model — `io_uring` is not faster than `epoll`:
+measured on the same loop over one quiet socket the non-blocking pass costs 25.8 ns under
+`io_uring` and 28.3 under `epoll`, and `io_uring` adds complexity and kernel-version sensitivity. It is built when
 available and selectable with `EVBACKEND_IOURING`; `epoll` remains the sane default.
 
 **What happens when a backend is unavailable?**

@@ -107,6 +107,45 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   pass, a blocking pass ignoring it, and the fed count moving only when a poll found the fd
   (unconditional floor 32 → 35). Exports: 80 `ev_*` on POSIX, 79 on Windows.
 
+- **`ev_io_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::io_count()` in `ev++.h`): the
+  number of active `ev_io` watchers, the loop's own wake pipe excluded — the count the fix
+  above reads. Covered by
+  `tests/test-loops.c` (`test_io_count`, four unconditional checks plus four on POSIX; the
+  suite's unconditional floor rises 16 → 20). The exported census is 78 `ev_*` on POSIX and 77
+  on Windows.
+- **`ev_active_count_addr(loop)` / `ev_pending_count_addr(loop)` and `EV_NUMPRI`** (`EV_FEATURE_API`,
+  plus `loop_ref::active_count_addr()` / `pending_count_addr()` in `ev++.h`): read-only aliases of
+  the two counters `ev_active_count` and `ev_pending_count` report, pointing into the loop and
+  valid until `ev_loop_destroy`. They exist for the same embedder as `ev_active_count`: a scheduler
+  that gates every `EVRUN_NOWAIT` pass on "is there anything to do" was paying two out-of-line
+  calls and a loop over the priorities on every pass — measured at ~10 % of a one-event pass in
+  qb 3.2's core once nothing else in that pass read a clock — where six inline loads answer the
+  same question. `*ev_active_count_addr` is the raw referenced-active count (it reads −1 between
+  an `ev_unref` and the start it pairs with; test it with `> 0`), and `ev_pending_count_addr` has
+  `EV_NUMPRI` entries — one per priority level, the constant is now public — whose sum is
+  `ev_pending_count`. Owner thread only, like any other read of the loop. Covered by
+  `tests/test-loops.c` (`test_count_addr`, six checks; the suite's unconditional floor rises
+  10 → 16 with them).
+- **`ev_active_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::active_count()` and
+  `loop_ref::pending_count()` in `ev++.h`): the number of *referenced* active watchers — the
+  quantity `ev_run` itself consults to decide whether it keeps looping. It exists for embedders
+  that drive the loop with `EVRUN_NOWAIT` from their own scheduler and need to know, before
+  paying for a backend poll and two clock reads, whether the loop has anything at all to do:
+  `ev_run(EVRUN_NOWAIT)` polls unconditionally, even over an empty loop, and a hot loop calling
+  it once per pass measures that cost on every pass. Watchers that were `ev_unref`'d are not
+  counted, by design (they do not keep the loop alive either); pending events are reported
+  separately by `ev_pending_count`. Covered by `tests/test-loops.c`.
+- **A wepoll test suite** (`tests/test-wepoll.c`, Windows-only by registration): the fork's
+  headline feature had no dedicated test. Five cases over native winsock SOCKETs, including
+  the regression test for the interest-set-modification bug that motivated the fork — a live
+  watcher widened to `READ|WRITE` whose re-registration never reached the backend.
+- **A loop-mechanics suite** (`tests/test-loops.c`, every platform): multi-loop isolation,
+  timer ordering and pacing, `ev_timer_again`, priority-ordered invocation, the README's
+  "NULL if unavailable" backend promise, `ev_now`/`ev_iteration` bookkeeping, `ev_feed_event`,
+  a real `fork()` + `ev_loop_fork`, a cross-thread `ev_async_send`, and a thousand concurrent
+  timers. Both suites carry the same anti-vacuity floor as the watcher suite: a run below its
+  unconditional check count fails instead of reading as a pass.
+
 ### Fixed
 
 - **The CMake build no longer dies on a Windows host that has Git for Windows' `pod2man` on its
@@ -240,47 +279,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   pending events are reified exactly as before — `tests/test-loops.c` (`test_io_count`) pins
   that a timers-only `EVRUN_NOWAIT` pass still fires an expired timer and that a timers-only
   blocking run still sleeps.
-
-### Added
-
-- **`ev_io_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::io_count()` in `ev++.h`): the
-  number of active `ev_io` watchers, the loop's own wake pipe excluded — the count the fix
-  above reads. Covered by
-  `tests/test-loops.c` (`test_io_count`, four unconditional checks plus four on POSIX; the
-  suite's unconditional floor rises 16 → 20). The exported census is 78 `ev_*` on POSIX and 77
-  on Windows.
-- **`ev_active_count_addr(loop)` / `ev_pending_count_addr(loop)` and `EV_NUMPRI`** (`EV_FEATURE_API`,
-  plus `loop_ref::active_count_addr()` / `pending_count_addr()` in `ev++.h`): read-only aliases of
-  the two counters `ev_active_count` and `ev_pending_count` report, pointing into the loop and
-  valid until `ev_loop_destroy`. They exist for the same embedder as `ev_active_count`: a scheduler
-  that gates every `EVRUN_NOWAIT` pass on "is there anything to do" was paying two out-of-line
-  calls and a loop over the priorities on every pass — measured at ~10 % of a one-event pass in
-  qb 3.2's core once nothing else in that pass read a clock — where six inline loads answer the
-  same question. `*ev_active_count_addr` is the raw referenced-active count (it reads −1 between
-  an `ev_unref` and the start it pairs with; test it with `> 0`), and `ev_pending_count_addr` has
-  `EV_NUMPRI` entries — one per priority level, the constant is now public — whose sum is
-  `ev_pending_count`. Owner thread only, like any other read of the loop. Covered by
-  `tests/test-loops.c` (`test_count_addr`, six checks; the suite's unconditional floor rises
-  10 → 16 with them).
-- **`ev_active_count(loop)`** (`EV_FEATURE_API`, plus `loop_ref::active_count()` and
-  `loop_ref::pending_count()` in `ev++.h`): the number of *referenced* active watchers — the
-  quantity `ev_run` itself consults to decide whether it keeps looping. It exists for embedders
-  that drive the loop with `EVRUN_NOWAIT` from their own scheduler and need to know, before
-  paying for a backend poll and two clock reads, whether the loop has anything at all to do:
-  `ev_run(EVRUN_NOWAIT)` polls unconditionally, even over an empty loop, and a hot loop calling
-  it once per pass measures that cost on every pass. Watchers that were `ev_unref`'d are not
-  counted, by design (they do not keep the loop alive either); pending events are reported
-  separately by `ev_pending_count`. Covered by `tests/test-loops.c`.
-- **A wepoll test suite** (`tests/test-wepoll.c`, Windows-only by registration): the fork's
-  headline feature had no dedicated test. Five cases over native winsock SOCKETs, including
-  the regression test for the interest-set-modification bug that motivated the fork — a live
-  watcher widened to `READ|WRITE` whose re-registration never reached the backend.
-- **A loop-mechanics suite** (`tests/test-loops.c`, every platform): multi-loop isolation,
-  timer ordering and pacing, `ev_timer_again`, priority-ordered invocation, the README's
-  "NULL if unavailable" backend promise, `ev_now`/`ev_iteration` bookkeeping, `ev_feed_event`,
-  a real `fork()` + `ev_loop_fork`, a cross-thread `ev_async_send`, and a thousand concurrent
-  timers. Both suites carry the same anti-vacuity floor as the watcher suite: a run below its
-  unconditional check count fails instead of reading as a pass.
 
 ## [5.0.0] — 2026-08-19
 

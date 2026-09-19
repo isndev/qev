@@ -237,7 +237,10 @@ static void test_io_count(void) {
         ev_tstamp t0 = ev_time();
         ev_timer_init(&t, tick_cb, 0.005, 0.0); ev_timer_start(l, &t);
         tick_fired = 0;
-        ev_run(l, EVRUN_ONCE);
+        /* ONE blocking pass normally fires it, but a wait of whole milliseconds against a finer clock can
+           return a hair before the deadline and leave the timer for the next pass (seen once on a hosted
+           Windows VM): what is asserted is the sleep, not the wait's rounding -- so pass until it fired. */
+        do ev_run(l, EVRUN_ONCE); while (tick_fired == 0 && ev_time() - t0 < 1.0);
         OK(tick_fired == 1 && ev_time() - t0 >= 0.004, "a timers-only blocking run still sleeps until the timer fires");
     }
 #ifndef _WIN32
@@ -408,8 +411,15 @@ static void test_nowait_async(void) {
     {                                     /* a park -- a blocking pass -- and NOWAIT passes again afterwards */
         ev_timer soon; ev_timer_init(&soon, tick_cb, 0.002, 0.0); ev_timer_start(l, &soon);
         tick_fired = 0;
-        ev_run(l, EVRUN_ONCE);            /* sleeps until the timer: the evpipe IS polled here */
-        OK(tick_fired == 1 && ev_io_count(l) == 0, "a blocking pass over the same loop still counts no pollable fd afterwards");
+        {                                 /* sleeps until the timer: the evpipe IS polled here. A wait of whole
+                                             milliseconds can return a hair before a deadline read on a finer
+                                             clock and hand the timer to the next pass (seen once on a hosted
+                                             Windows VM, 2026-09-19): the count is the subject, so pass until fired. */
+            ev_tstamp t0 = ev_time();
+            do ev_run(l, EVRUN_ONCE); while (tick_fired == 0 && ev_time() - t0 < 1.0);
+        }
+        OK(tick_fired == 1, "a blocking pass over the same loop fires the timer it parked on");
+        OK(ev_io_count(l) == 0, "a blocking pass over the same loop still counts no pollable fd afterwards");
         ev_timer_stop(l, &soon);          /* a no-op once it fired; a stack watcher must never outlive its block */
         ev_async_send(l, &nw_async);
         ev_run(l, EVRUN_NOWAIT);

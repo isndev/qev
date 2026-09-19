@@ -7,6 +7,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # develop is where every commit lands; main moves only at a release (AGENTS.md). Without this
+    # line the bumps target the default branch, and one of them (softprops/action-gh-release
+    # 3.0.2 -> 3.0.3, 2026-09-20) landed on main ahead of the v5.0.0 tag.
+    target-branch: develop
     commit-message:
       prefix: ci
     labels: [ dependencies, ci ]

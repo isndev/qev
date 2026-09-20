@@ -160,6 +160,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **The shared object's file version follows the release.** The CMake build derived the library
+  `VERSION` as libtool's current.age.revision with age and revision pinned to 0, so every release
+  of a major line produced a `libqev.so.5.0.0`: the 5.1.0 archives would have carried a file named
+  5.0.0 beside a `SHA256SUMS` saying 5.1.0. The target carries `PROJECT_VERSION` (SONAME
+  `libqev.so.5`), and `Makefile.am`'s `VERSION_INFO` is derived from the version the same way
+  (current = major + minor, revision = patch, age = minor), so both build systems name the object
+  `libqev.so.X.Y.Z`. The release train that checks it is `dev/agent/qev-release.sh` in qb's
+  development tree: it verifies a published release by download, the file name included.
 - **The CMake build no longer dies on a Windows host that has Git for Windows' `pod2man` on its
   PATH (Huly QB-211).** `find_program(pod2man)` accepted `Git/usr/bin/core_perl/pod2man` -- a
   `#!/usr/bin/perl` script with no extension, which CreateProcess cannot start -- and the

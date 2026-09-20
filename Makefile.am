@@ -1,6 +1,10 @@
 AUTOMAKE_OPTIONS = foreign
 
-# libtool interface version (current:revision:age). 5 is qev's own line, not libev's.
+# libtool interface version, current:revision:age, derived from the release version X.Y.Z as
+# current = X + Y, revision = Z, age = Y -- so libtool names the object libqev.so.X.Y.Z with
+# SONAME libqev.so.X, the same file the CMake build produces from PROJECT_VERSION. 5 is qev's
+# own line, not libev's. dev/agent/qev-release.sh in the development tree rewrites this line
+# from the version it ships and refuses a value that does not follow the rule.
 VERSION_INFO = 5:0:0
 
 EXTRA_DIST = README.md CHANGELOG.md \

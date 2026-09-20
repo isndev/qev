@@ -5,7 +5,7 @@ AUTOMAKE_OPTIONS = foreign
 # SONAME libqev.so.X, the same file the CMake build produces from PROJECT_VERSION. 5 is qev's
 # own line, not libev's. dev/agent/qev-release.sh in the development tree rewrites this line
 # from the version it ships and refuses a value that does not follow the rule.
-VERSION_INFO = 5:0:0
+VERSION_INFO = 6:0:1
 
 EXTRA_DIST = README.md CHANGELOG.md \
 	     CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md qev.m4 autogen.sh \

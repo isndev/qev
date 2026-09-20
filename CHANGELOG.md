@@ -6,6 +6,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
+Nothing yet. Entries land here as they are merged, and move under a version heading when that version is tagged.
+
+## [5.1.0] — 2026-09-20
+
 ### Changed
 
 - **The library a build with no configuration header gets is libev's, not qb's profile.** `ev.h`'s
@@ -502,4 +506,6 @@ Based on libev © Marc Alexander Lehmann and wepoll © Bert Belder; see
 qev forks libev at 4.33. For the pre-5.0 (upstream libev) history, see the
 [libev changelog](http://cvs.schmorp.de/libev/Changes?view=markup).
 
+[Unreleased]: https://github.com/isndev/qev/compare/v5.1.0...HEAD
+[5.1.0]: https://github.com/isndev/qev/compare/v5.0.0...v5.1.0
 [5.0.0]: https://github.com/isndev/qev/releases/tag/v5.0.0

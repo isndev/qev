@@ -1,7 +1,7 @@
 dnl qev autotools build. Keep ev.h EV_VERSION_MAJOR/MINOR in sync with the
 dnl version below.
 AC_PREREQ([2.69])
-AC_INIT([qev],[5.0],[https://github.com/isndev/qev/issues],[qev],
+AC_INIT([qev],[5.1.0],[https://github.com/isndev/qev/issues],[qev],
         [https://github.com/isndev/qev])
 
 orig_CFLAGS="$CFLAGS"

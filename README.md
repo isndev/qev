@@ -95,7 +95,7 @@ target_link_libraries(myapp PRIVATE qb::ev)   # `qev::qev` is also provided
 ```cmake
 add_subdirectory(qev)                 # or:
 include(FetchContent)
-FetchContent_Declare(qev GIT_REPOSITORY https://github.com/isndev/qev.git GIT_TAG v5.0.0)
+FetchContent_Declare(qev GIT_REPOSITORY https://github.com/isndev/qev.git GIT_TAG v5.1.0)
 FetchContent_MakeAvailable(qev)
 target_link_libraries(myapp PRIVATE qb::ev)
 ```

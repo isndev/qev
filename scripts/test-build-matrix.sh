@@ -166,8 +166,19 @@ Vm=$(grep -m1 'EV_VERSION_MINOR' ev.h | grep -o '[0-9]*')
 # yields an empty string, which then 'disagrees' with everything. The project() version is the
 # one on its own indented line.
 CMV=$(grep -m1 -E '^[[:space:]]*VERSION[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-ACV=$(grep -m1 'AC_INIT' configure.ac | grep -oE '\[[0-9]+\.[0-9]+\]' | tr -d '[]')
+# CMake's is the one full X.Y.Z (ev.h carries MAJOR and MINOR only): every other site is compared
+# with what that triple DERIVES, not with a shape that happens to hold for X.0.0.
+CX=${CMV%%.*}; CY=${CMV#*.}; CY=${CY%%.*}; CZ=${CMV##*.}
+# AC_INIT spells X.Y.Z -- or X.Y when Z is 0, which is what 5.0.0 shipped with.
+ACV=$(grep -m1 'AC_INIT' configure.ac | grep -oE '\[[0-9]+\.[0-9]+(\.[0-9]+)?\]' | head -1 | tr -d '[]')
 LTV=$(grep -m1 'VERSION_INFO *=' Makefile.am | grep -oE '[0-9]+:[0-9]+:[0-9]+')
+# libtool's -version-info is current:revision:age, and it names the object
+# lib.so.(current-age).age.revision -- so X.Y.Z is (X+Y):Z:Y, which gives libqev.so.X.Y.Z with
+# SONAME libqev.so.X, exactly what the CMake build makes of PROJECT_VERSION. This cell used to
+# want X:Y:0, right at 5:0:0 and nowhere else (5:1:0 names libqev.so.5.0.1), and AC_INIT in two
+# components only: the 5.1.0 release commit, whose sites were all correct, went red on three
+# platforms and the train stopped before its tag.
+LTW=""; [ -n "$CMV" ] && LTW="$((CX + CY)):$CZ:$CY"
 # '^## \[[0-9]', not '^## \[': the first heading is now [Unreleased], which carries no number
 # and would make this yield an empty string that then 'disagrees' with every other site.
 CLV=$(grep -m1 -E '^## \[[0-9]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
@@ -175,14 +186,16 @@ CLV=$(grep -m1 -E '^## \[[0-9]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'
 # release by shields.io, so it cannot drift. What is checked instead is that it is STILL the
 # derived one -- reverting to a literal would reintroduce the very site this cell guards.
 RDV=$(grep -qF 'img.shields.io/github/v/release/isndev/qev' README.md && echo derived || echo MISSING)
-detail="ev.h=$V.$Vm cmake=$CMV autoconf=$ACV libtool=$LTV changelog=$CLV readme=$RDV"
+detail="ev.h=$V.$Vm cmake=$CMV autoconf=$ACV libtool=$LTV (wants ${LTW:-?}) changelog=$CLV readme=$RDV"
 bad=""
-[ "$V" = 5 ] || bad="$bad ev.h-major"
-[ "$CMV" = "$V.$Vm.0" ] || bad="$bad cmake"
-[ "$ACV" = "$V.$Vm" ]   || bad="$bad autoconf"
-[ "$LTV" = "$V:$Vm:0" ] || bad="$bad libtool"
-[ "$CLV" = "$V.$Vm.0" ] || bad="$bad changelog"
-[ "$RDV" = derived ]    || bad="$bad readme-badge-not-derived"
+# An unreadable triple first: two empty strings compare EQUAL, and every derivation below
+# would then agree with nothing at all.
+[ -n "$CMV" ]              || bad="$bad cmake-unreadable"
+[ "$V.$Vm" = "$CX.$CY" ]   || bad="$bad ev.h"
+{ [ "$ACV" = "$CMV" ] || { [ "$CZ" = 0 ] && [ "$ACV" = "$CX.$CY" ]; }; } || bad="$bad autoconf"
+[ "$LTV" = "$LTW" ]        || bad="$bad libtool"
+[ "$CLV" = "$CMV" ]        || bad="$bad changelog"
+[ "$RDV" = derived ]       || bad="$bad readme-badge-not-derived"
 [ -z "$bad" ] && res version-surface PASS "$detail" \
                || res version-surface FAIL "disagree:$bad ($detail)"
 

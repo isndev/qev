@@ -6,7 +6,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
-Nothing yet. Entries land here as they are merged, and move under a version heading when that version is tagged.
+### Fixed
+
+- **`ev_timer_next`'s documentation states the loop's strict due rule.** `docs/ev.pod` and the comment
+  above the function in `ev.c` said a deadline at or before the embedder's reading is due; `timers_reify`
+  fires a timer only when its deadline is strictly before the loop's time (`ANHE_at (timers [HEAP0]) <
+  mn_now`), so an embedder that gated `ev_run` on the inclusive test ran a pass that fired nothing whenever
+  its reading equalled the deadline -- on Windows, where the clock moves in 100 ns steps, the first pass
+  past a deadline does as a rule. Documentation only; qb's gate was corrected in qb (Huly QB-1016).
 
 ## [5.1.0] — 2026-09-20
 

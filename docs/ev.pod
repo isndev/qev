@@ -1266,9 +1266,10 @@ read inline. The second is the earliest deadline the loop holds, on the
 clock C<ev_clock_now ()> reads: the top of the timer heap, and of the
 periodic heap brought onto the monotonic scale when periodics are compiled
 in; a value no reading can reach (C<1e13> seconds or more) when it holds
-none. C<timers_reify> fires a timer once the loop's time has passed its
-deadline, so a deadline at or before the embedder's reading is due, one
-after it is not. The third is the address of the flag C<ev_async_send>
+none. C<timers_reify> fires a timer only once the loop's time is strictly
+past its deadline, so a deadline before the embedder's reading is due, one
+at or after it is not -- an inclusive test runs C<ev_run> for nothing on
+the pass that reads the deadline exactly. The third is the address of the flag C<ev_async_send>
 (and a signal) raises from any thread while no pass wanted the wake pipe
 written -- the loop was not blocking -- cleared by the pass that delivers
 it: an embedder that skips passes runs one while it is set. With

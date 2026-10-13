@@ -8,6 +8,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **Build and CI checks report the artifact they actually tested (Huly QB-314, QB-729–735,
+  QB-739, QB-740, QB-742, QB-743).**
+  Autotools leaves the libevent shim off unless requested; the build tree stages its optional
+  headers; pkg-config has separate Release and Debug files and handles nested libdirs. The
+  matrix executes its full POSIX suites and rejects a failed reduced suite, a collision with
+  pre-existing qb files, and a failed wrap-header preprocessor. Loop and wepoll tests now
+  exercise the intended rearm, isolation, concurrent initialization, and backend paths.
+  Benchmark labels no longer claim a backend or descriptor count they did not measure.
 - **`ev_timer_next`'s documentation states the loop's strict due rule.** `docs/ev.pod` and the comment
   above the function in `ev.c` said a deadline at or before the embedder's reading is due; `timers_reify`
   fires a timer only when its deadline is strictly before the loop's time (`ANHE_at (timers [HEAP0]) <

@@ -44,7 +44,7 @@ static const char *bname(unsigned b) {
   }
 }
 
-/* Returns events/sec, -1 if the backend is unavailable, -2 if skipped (FD cap). */
+/* Returns events/sec, -1 if the backend is unavailable, -2 if skipped (FD cap or partial setup). */
 static double run_bench(unsigned backend, int N, int active_k, double seconds) {
   if (backend == EVBACKEND_SELECT && N >= FD_SETSIZE - 16) return -2;
   struct ev_loop *l = ev_loop_new(backend);
@@ -52,6 +52,7 @@ static double run_bench(unsigned backend, int N, int active_k, double seconds) {
 
   int (*sv)[2] = calloc((size_t)N, sizeof *sv);
   ev_io *w = calloc((size_t)N, sizeof *w);
+  if (!sv || !w) { free(sv); free(w); ev_loop_destroy(l); return -2; }
   int made = 0;
   for (int i = 0; i < N; i++) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv[i]) != 0) break;
@@ -60,9 +61,9 @@ static double run_bench(unsigned backend, int N, int active_k, double seconds) {
     ev_io_start(l, &w[i]);
     made = i + 1;
   }
-  N = made;
-  double eps = -1;
-  if (N > 0) {
+  double eps = -2;
+  /* Never publish an N-descriptor result from a smaller population. */
+  if (made == N) {
     ev_run(l, EVRUN_NOWAIT); /* warm-up: flush the registration changelist */
     int K = active_k < N ? active_k : N;
     long total = 0; size_t cursor = 0;
@@ -81,7 +82,7 @@ static double run_bench(unsigned backend, int N, int active_k, double seconds) {
     } while (t1 - t0 < seconds);
     eps = total / (t1 - t0);
   }
-  for (int i = 0; i < N; i++) { ev_io_stop(l, &w[i]); close(sv[i][0]); close(sv[i][1]); }
+  for (int i = 0; i < made; i++) { ev_io_stop(l, &w[i]); close(sv[i][0]); close(sv[i][1]); }
   free(sv); free(w); ev_loop_destroy(l);
   return eps;
 }

@@ -35,7 +35,11 @@ qevinclude_HEADERS = ev.h ev++.h
 # that was tried and reverted; the conclusion was right and the reason was not.)
 lib_LTLIBRARIES = libqev.la
 
-libqev_la_SOURCES = ev.c event.c
+libqev_la_SOURCES = ev.c
+if LIBEVENT_COMPAT
+libqev_la_SOURCES += event.c
+qevinclude_HEADERS += event.h event_compat.h
+endif
 libqev_la_LDFLAGS = -version-info $(VERSION_INFO)
 
 # qev.3 is generated from ev.pod (not shipped pre-built; regenerated at build time).

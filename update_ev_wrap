@@ -21,7 +21,8 @@ set -e
 
 expected=$(grep -cE '^[[:space:]]*VARx?[[:space:]]*\(' ev_vars.h)
 tmp=ev_wrap.h.tmp
-trap 'rm -f "$tmp"' EXIT
+preprocessed=ev_wrap.h.preprocessed.tmp
+trap 'rm -f "$tmp" "$preprocessed"' EXIT
 
 cat >"$tmp" <<'HEADER'
 /*
@@ -45,7 +46,10 @@ HEADER
    echo '#define VAR(name,decl) name'
    echo '#define EV_GENWRAP 1'
    cat ev_vars.h
-) | cc -E -o - - | EXPECTED="$expected" perl -ne '
+) | cc -E -o "$preprocessed" -
+# Keep the preprocessor exit status. A pipeline ending in perl otherwise accepts a
+# partial symbol list when cc writes output and then fails.
+EXPECTED="$expected" perl -ne '
    next if /^\s*#/;                 # preprocessor linemarkers, not content
    push @syms, /(\w+)/g;
    END {
@@ -62,7 +66,6 @@ HEADER
             (map "#undef $_\n", @syms),
             "#endif\n";
    }
-' >>"$tmp"
+' <"$preprocessed" >>"$tmp"
 
 mv "$tmp" ev_wrap.h
-trap - EXIT

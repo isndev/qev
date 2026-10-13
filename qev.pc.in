@@ -1,5 +1,5 @@
 # Relocatable: prefix is derived from this file's location (<prefix>/<libdir>/pkgconfig).
-prefix=${pcfiledir}/../..
+prefix=${pcfiledir}/@QB_EV_PC_UP@
 exec_prefix=${prefix}
 libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
@@ -8,7 +8,7 @@ Name: qev
 Description: A maintained, cross-platform continuation of libev - same ev_* C API, headers under <qev/>
 URL: https://github.com/isndev/qev
 Version: @PROJECT_VERSION@
-Libs: -L${libdir} -lqev
+Libs: -L${libdir} -l@QB_EV_PC_LIBNAME@
 Libs.private: @QB_EV_PC_PRIVATE_LIBS@
 # -I<prefix>/include, so the spelling is <qev/ev.h> -- the SAME one find_package(qev)
 # gives. A .pc that pointed one level deeper would make the include line depend on how

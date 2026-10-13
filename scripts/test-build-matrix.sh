@@ -206,6 +206,20 @@ if cmake -S . -B b-static -DCMAKE_BUILD_TYPE=Release >b-static-cfg.log 2>&1 \
   [ "$W" = 0 ] && res cmake-static PASS "libqev.a, 0 warn" || res cmake-static FAIL "$W warnings"
 else res cmake-static FAIL "build error: $(tail -3 b-static.log 2>/dev/null|tr '\n' ' ')"; fi
 
+# The ordinary POSIX lane must execute both registered suites, not only build them.
+REGISTERED=$(ctest --test-dir b-static -N 2>/dev/null | grep -c 'Test #' || true)
+if [ "$REGISTERED" -ge 2 ] && ctest --test-dir b-static --output-on-failure >b-static-ctest.log 2>&1; then
+  EXECUTED=$(grep -cE '^[[:space:]]*[0-9]+/[0-9]+ Test' b-static-ctest.log || true)
+  SKIPPED=$(grep -c '\*\*\*Skipped' b-static-ctest.log || true)
+  if [ "$EXECUTED" -ge 2 ] && [ "$SKIPPED" -eq 0 ]; then
+    res cmake-full-suites PASS "registered=$REGISTERED executed=$EXECUTED skipped=$SKIPPED"
+  else
+    res cmake-full-suites FAIL "registered=$REGISTERED executed=$EXECUTED skipped=$SKIPPED"
+  fi
+else
+  res cmake-full-suites FAIL "registered=$REGISTERED; $(tail -3 b-static-ctest.log 2>/dev/null | tr '\n' ' ')"
+fi
+
 # ---- cell: cmake shared ---------------------------------------------------
 if cmake -S . -B b-shared -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON >b-shared-cfg.log 2>&1 \
    && cmake --build b-shared -j >b-shared.log 2>&1; then
@@ -303,16 +317,19 @@ else res cxx-qevpp-drive FAIL "$(tail -2 cxx-link.log cxx-run.log 2>/dev/null|tr
 #   qb           -> lib/libqb-ev.a  + include/qb/ev/
 #   standalone   -> lib/libqev.a    + include/qev/  + lib/cmake/qev/ + lib/pkgconfig/qev.pc
 PFXQ="$WORK/pfx-shared"
-cmake --install b-static --prefix "$PFXQ" >shared-inst.log 2>&1
 # stand in for a qb install: the same two paths qb would write
 mkdir -p "$PFXQ/include/qb/ev" "$PFXQ/lib"
-: > "$PFXQ/lib/libqb-ev.a"; : > "$PFXQ/include/qb/ev/ev.h"
+printf 'qb archive sentinel\n' > "$PFXQ/lib/libqb-ev.a"
+printf 'qb header sentinel\n' > "$PFXQ/include/qb/ev/ev.h"
+cp "$PFXQ/lib/libqb-ev.a" "$WORK/qb-ev-sentinel.a"
+cp "$PFXQ/include/qb/ev/ev.h" "$WORK/qb-ev-sentinel.h"
+cmake --install b-static --prefix "$PFXQ" >shared-inst.log 2>&1
 CLASH=""
 for p in lib/libqev.a include/qev/ev.h include/qev/ev_config.h; do
   [ -s "$PFXQ/$p" ] || CLASH="$CLASH $p(missing-or-emptied)"
 done
-[ -s "$PFXQ/lib/libqb-ev.a" ] && CLASH="$CLASH libqb-ev.a(overwritten-by-standalone)"
-[ -s "$PFXQ/include/qb/ev/ev.h" ] && CLASH="$CLASH qb/ev/ev.h(overwritten-by-standalone)"
+cmp -s "$PFXQ/lib/libqb-ev.a" "$WORK/qb-ev-sentinel.a" || CLASH="$CLASH libqb-ev.a(overwritten-by-standalone)"
+cmp -s "$PFXQ/include/qb/ev/ev.h" "$WORK/qb-ev-sentinel.h" || CLASH="$CLASH qb/ev/ev.h(overwritten-by-standalone)"
 if [ -z "$CLASH" ]; then
   res shared-prefix-install PASS "libqev.a + include/qev/ coexist with qb's libqb-ev.a + include/qb/ev/"
 else res shared-prefix-install FAIL "path(s) collide:$CLASH"; fi
@@ -351,9 +368,16 @@ if cmake -S . -B b-reduced -DCMAKE_BUILD_TYPE=Release -DQB_EV_WATCHERS_FULL=OFF 
    && cmake --build b-reduced -j >b-red.log 2>&1; then
   W=$(grep -ci 'warning:' b-red.log)
   if [ "$W" != 0 ]; then res reduced-profile FAIL "$W warnings"
-  elif RED=$(./b-reduced/qev-test-watchers 2>&1 | grep '== watchers'); then
-    res reduced-profile PASS "$(echo "$RED" | tr -d '=' | sed 's/^ *//;s/ *$//')"
-  else res reduced-profile FAIL "the watcher suite produced no summary line"; fi
+  else
+    ./b-reduced/qev-test-watchers >b-reduced-watchers.log 2>&1
+    RED_RC=$?
+    RED=$(grep '== watchers' b-reduced-watchers.log || true)
+    if [ "$RED_RC" -eq 0 ] && [ -n "$RED" ] && ! printf '%s\n' "$RED" | grep -Eq '[1-9][0-9]* failed|[1-9][0-9]* skipped'; then
+      res reduced-profile PASS "$(echo "$RED" | tr -d '=' | sed 's/^ *//;s/ *$//')"
+    else
+      res reduced-profile FAIL "exit=$RED_RC ${RED:-no summary line}"
+    fi
+  fi
 else res reduced-profile FAIL "build error: $(tail -3 b-red.log b-red-cfg.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # ---- cell: ev_wrap.h is reproducible from ev_vars.h -----------------------
@@ -376,6 +400,20 @@ if have perl; then
     res ev-wrap-reproducible FAIL "update_ev_wrap failed: $(tail -1 "$WORK/genwrap.log")"
   fi
   cp "$WORK/ev_wrap.committed" ev_wrap.h
+  mkdir -p "$WORK/fake-cc"
+  cat > "$WORK/fake-cc/cc" <<'EOF'
+#!/bin/sh
+printf 'partial_name_1 partial_name_2\n'
+exit 1
+EOF
+  chmod +x "$WORK/fake-cc/cc"
+  if PATH="$WORK/fake-cc:$PATH" sh ./update_ev_wrap >"$WORK/genwrap-fail.log" 2>&1; then
+    res ev-wrap-preprocessor-failure FAIL "generator accepted a failed preprocessor"
+  elif cmp -s "$WORK/ev_wrap.committed" ev_wrap.h; then
+    res ev-wrap-preprocessor-failure PASS "failed preprocessor left ev_wrap.h unchanged"
+  else
+    res ev-wrap-preprocessor-failure FAIL "failed preprocessor replaced ev_wrap.h"
+  fi
 else res ev-wrap-reproducible SKIP "no perl"; fi
 
 echo "== SUMMARY mode=$MODE: PASS=$PASS FAIL=$FAIL SKIP=$SKIP =="

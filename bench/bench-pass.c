@@ -107,7 +107,7 @@ static int want(int argc, char **argv, const char *shape) {
 
 int main(int argc, char **argv) {
     const long passes = argc > 1 ? atol(argv[1]) : 2000000L;
-    printf("qev pass cost (ev %d.%d, backend 0x%x), %ld passes per shape, ns per pass\n",
+    printf("qev pass cost (ev %d.%d, recommendation_mask 0x%x), %ld passes per shape, ns per pass\n",
            ev_version_major(), ev_version_minor(), ev_recommended_backends(), passes);
 
     if (want(argc, argv, "empty")) {

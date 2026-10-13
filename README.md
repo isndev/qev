@@ -106,6 +106,10 @@ target_link_libraries(myapp PRIVATE qb::ev)
 cc myapp.c $(pkg-config --cflags --libs qev) -o myapp
 ```
 
+For a Debug install, use `pkg-config --cflags --libs qev-debug` to link
+`libqevd`. Release and Debug packages coexist in one prefix without depending
+on installation order.
+
 No dependencies. One self-contained C library; wepoll is vendored on Windows, and the
 optional C++ wrapper is header-only.
 
@@ -306,7 +310,8 @@ Everything a distribution needs is generated rather than curated by hand.
 
 - **Two install components.** `qev_Runtime` carries the versioned shared object and its
   SONAME symlink — what a *program* needs. `qev_Development` carries the headers, the
-  static archive, the unversioned link symlink, the CMake package and `qev.pc` — what a
+  static archive, the unversioned link symlink, the CMake package and the
+  configuration-specific `qev.pc` or `qev-debug.pc` — what a
   *build* needs. That is the `libqev` / `libqev-dev` split, drawn by the build rather
   than by a packager reading a file list.
 
@@ -325,8 +330,9 @@ Everything a distribution needs is generated rather than curated by hand.
 - **A Debug and a Release build share a prefix** — `DEBUG_POSTFIX` makes the debug
   archive `libqevd.a`, so the second install cannot silently overwrite the first.
 
-- **pkg-config** (`qev.pc`) and a **CMake package config** describe the same thing: both
-  resolve `#include <qev/ev.h>`.
+- **pkg-config** (`qev.pc` for Release, `qev-debug.pc` for Debug) and the **CMake
+  package config** resolve `#include <qev/ev.h>`. The `.pc` prefix remains relative
+  to its installed location even when `CMAKE_INSTALL_LIBDIR` is nested.
 
 ## Coexisting with libev
 
@@ -352,8 +358,8 @@ silently disappearing.
 
 The **libevent** compatibility layer (`event.h`) is kept but **off by default**: it
 exports 24 *unprefixed* upstream libevent symbols, and libevent is far more widely
-deployed than libev. Turn it on with `-DQB_EV_LIBEVENT_COMPAT=ON` and own those names
-deliberately.
+deployed than libev. Turn it on with `-DQB_EV_LIBEVENT_COMPAT=ON` in CMake or
+`./configure --enable-libevent-compat` in Autotools, and own those names deliberately.
 
 ## Threading model
 

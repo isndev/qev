@@ -53,10 +53,12 @@ static void test_multi_loop_isolation(void) {
     struct ev_loop *a = ev_loop_new(EVFLAG_AUTO);
     struct ev_loop *b = ev_loop_new(EVFLAG_AUTO);
     ev_timer ta; ev_timer_init(&ta, iso_a_cb, 0.01, 0.0); ev_timer_start(a, &ta);
-    ev_timer tb; ev_timer_init(&tb, iso_b_cb, 3600.0, 0.0); ev_timer_start(b, &tb);
+    ev_timer tb; ev_timer_init(&tb, iso_b_cb, 0.001, 0.0); ev_timer_start(b, &tb);
     ev_timer wd; ev_timer_init(&wd, wd_cb, 2.0, 0.0); ev_timer_start(a, &wd);
     ev_run(a, 0);
     OK(iso_a == 1 && iso_b == 0, "multi-loop isolation (running A never fires B's watchers)");
+    ev_run(b, EVRUN_NOWAIT);
+    OK(iso_b == 1, "B's due watcher fires only when B is run");
     ev_timer_stop(b, &tb);
     ev_loop_destroy(a);
     ev_loop_destroy(b);
@@ -106,13 +108,14 @@ static void test_timer_repeat(void) {
 static int again_hits;
 static void again_cb(struct ev_loop *l, ev_timer *w, int r) {
     (void)r;
-    if (++again_hits == 1) { ev_timer_again(l, w); }  /* re-arm once */
+    if (++again_hits == 1) { w->repeat = 0.01; ev_timer_again(l, w); }
     else ev_break(l, EVBREAK_ALL);
 }
 static void test_timer_again(void) {
     again_hits = 0;
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
-    ev_timer t; ev_timer_init(&t, again_cb, 0.01, 0.01); ev_timer_start(l, &t);
+    /* One-shot: the second callback is impossible unless again actually arms it. */
+    ev_timer t; ev_timer_init(&t, again_cb, 0.01, 0.0); ev_timer_start(l, &t);
     ev_timer wd; ev_timer_init(&wd, wd_cb, 2.0, 0.0); ev_timer_start(l, &wd);
     ev_run(l, 0);
     OK(again_hits == 2, "ev_timer_again re-arms from the repeat interval");
@@ -696,9 +699,17 @@ static void test_wake_pending(void) {
    of the loop_init race (a plain build cannot see it, which is the whole point of the gate). */
 #define NLOOP_THREADS 8
 static int       lc_ok[NLOOP_THREADS];
+static pthread_mutex_t lc_start_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  lc_start_cond = PTHREAD_COND_INITIALIZER;
+static int lc_ready, lc_go;
 static void lc_timer_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ev_break(l, EVBREAK_ALL); }
 static void *lc_thread(void *arg) {
     int idx = *(int *) arg;
+    pthread_mutex_lock(&lc_start_mutex);
+    ++lc_ready;
+    pthread_cond_broadcast(&lc_start_cond);
+    while (!lc_go) pthread_cond_wait(&lc_start_cond, &lc_start_mutex);
+    pthread_mutex_unlock(&lc_start_mutex);
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);   /* <- loop_init: the capability probe */
     if (l) {
         ev_timer t;
@@ -713,9 +724,15 @@ static void *lc_thread(void *arg) {
 static void test_concurrent_loop_new(void) {
     pthread_t th[NLOOP_THREADS];
     int       id[NLOOP_THREADS], i, started = 0, all_ok = 1;
+    lc_ready = lc_go = 0;
     for (i = 0; i < NLOOP_THREADS; ++i) { lc_ok[i] = 0; id[i] = i; }
     for (i = 0; i < NLOOP_THREADS; ++i)
-        if (pthread_create(&th[i], NULL, lc_thread, &id[i]) == 0) ++started;
+        if (pthread_create(&th[started], NULL, lc_thread, &id[i]) == 0) ++started;
+    pthread_mutex_lock(&lc_start_mutex);
+    while (lc_ready < started) pthread_cond_wait(&lc_start_cond, &lc_start_mutex);
+    lc_go = 1;
+    pthread_cond_broadcast(&lc_start_cond);
+    pthread_mutex_unlock(&lc_start_mutex);
     for (i = 0; i < started; ++i) pthread_join(th[i], NULL);
     if (started < NLOOP_THREADS) { SKIP("concurrent ev_loop_new", "pthread_create failed"); return; }
     for (i = 0; i < NLOOP_THREADS; ++i) all_ok = all_ok && lc_ok[i];
@@ -755,7 +772,7 @@ static void test_async_two_senders(void) {
     ev_async_init(&ts_a[0], ts_cb0); ev_async_start(l, &ts_a[0]);
     ev_async_init(&ts_a[1], ts_cb1); ev_async_start(l, &ts_a[1]);
     ev_timer_init(&far_off, tick_cb, 3600.0, 0.0); ev_timer_start(l, &far_off);
-    for (i = 0; i < 2; ++i) if (pthread_create(&th[i], NULL, ts_sender, &id[i]) == 0) ++started;
+    for (i = 0; i < 2; ++i) if (pthread_create(&th[started], NULL, ts_sender, &id[i]) == 0) ++started;
     if (started == 2) {
         ev_tstamp t0 = ev_time();
         while ((ts_hits[0] < TS_ROUNDS || ts_hits[1] < TS_ROUNDS) && ev_time() - t0 < 20.0) {
@@ -943,6 +960,10 @@ int main(void) {
     printf("qev loop-mechanics coverage (ev %d.%d, backends=0x%x)\n",
            ev_version_major(), ev_version_minor(), ev_supported_backends());
 
+#ifndef _WIN32
+    /* First loop creation must happen concurrently, before earlier cases warm globals. */
+    test_concurrent_loop_new();
+#endif
     test_multi_loop_isolation();
     test_timer_ordering();
     test_timer_repeat();
@@ -971,7 +992,6 @@ int main(void) {
     SKIP("wake pending (ev_wake_pending_addr)", "async watchers compiled out");
 #endif
 #ifndef _WIN32
-    test_concurrent_loop_new();
 # if EV_ASYNC_ENABLE
     test_async_two_senders();
 # else

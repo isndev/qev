@@ -26,6 +26,13 @@ fi
 AC_PROG_INSTALL
 LT_INIT
 
+AC_ARG_ENABLE([libevent-compat],
+  [AS_HELP_STRING([--enable-libevent-compat], [build the unprefixed event_* compatibility API (default: no)])],
+  [], [enable_libevent_compat=no])
+AS_CASE([$enable_libevent_compat], [yes|no], [],
+  [AC_MSG_ERROR([--enable-libevent-compat accepts yes or no])])
+AM_CONDITIONAL([LIBEVENT_COMPAT], [test "x$enable_libevent_compat" = xyes])
+
 m4_include([qev.m4])
 
 AC_CONFIG_FILES([Makefile])

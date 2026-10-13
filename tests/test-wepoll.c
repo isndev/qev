@@ -105,7 +105,7 @@ static void test_read(void) {
     rd_hit = 0; rd_revents = 0;
     SOCKET a, b;
     if (tcp_pair(&a, &b)) { SKIP("wepoll EV_READ", "loopback pair failed"); return; }
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
     ev_io w; ev_io_init_sock(&w, rd_cb, b, EV_READ); ev_io_start(l, &w);
     OK(ev_io_count(l) == 1 && w.fd >= 0 && (SOCKET)w.handle == b,
        "ev_io_start on a native SOCKET acquires a registry fd and keeps the handle");
@@ -141,7 +141,7 @@ static void modify_once(int use_cycle, const char *name) {
     mod_phase = 0; mod_write_seen = 0; mod_error = 0; mod_use_cycle = use_cycle;
     SOCKET a, b;
     if (tcp_pair(&a, &b)) { SKIP(name, "loopback pair failed"); return; }
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
     ev_io w; ev_io_init_sock(&w, mod_cb, b, EV_READ); ev_io_start(l, &w);
     send(a, "x", 1, 0);
     ev_timer wd; ev_timer_init(&wd, wd_cb, 3.0, 0.0); ev_timer_start(l, &wd);
@@ -167,7 +167,7 @@ static void test_halfclose(void) {
     hup_eof = 0; hup_error = 0;
     SOCKET a, b;
     if (tcp_pair(&a, &b)) { SKIP("half-close", "loopback pair failed"); return; }
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
     ev_io w; ev_io_init_sock(&w, hup_cb, b, EV_READ); ev_io_start(l, &w);
     shutdown(a, SD_SEND);
     ev_timer wd; ev_timer_init(&wd, wd_cb, 3.0, 0.0); ev_timer_start(l, &wd);
@@ -198,7 +198,7 @@ static void test_many_sockets(void) {
         SKIP("64 concurrent watchers", "could not build all loopback pairs");
         return;
     }
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
     for (int i = 0; i < NPAIR; ++i) {
         ev_io_init_sock(&ws[i], many_cb, bs[i], EV_READ);
         ev_io_start(l, &ws[i]);
@@ -231,7 +231,7 @@ static void test_accept(void) {
         SKIP("listener watcher", "listen setup failed");
         return;
     }
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
     ev_io w; ev_io_init_sock(&w, acc_cb, ls, EV_READ); ev_io_start(l, &w);
     SOCKET c = socket(AF_INET, SOCK_STREAM, 0);
     connect(c, (struct sockaddr *)&sa, sizeof sa);
@@ -254,7 +254,7 @@ static void nopoll_cb(struct ev_loop *l, ev_io *w, int r) {
 static void test_nopoll_socket(void) {
     SOCKET a, b;
     if (tcp_pair(&a, &b)) { SKIP("EVRUN_NOPOLL over a readable SOCKET", "loopback pair failed"); return; }
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
     ev_io w; ev_io_init_sock(&w, nopoll_cb, b, EV_READ); ev_io_start(l, &w);
     OK(*ev_io_count_addr(l) == 1, "the inline io count follows ev_io_start on a SOCKET");
     nopoll_hits = 0; nopoll_error = 0;
@@ -290,6 +290,19 @@ int main(void) {
     }
     printf("qev wepoll coverage (ev %d.%d, backends=0x%x)\n",
            ev_version_major(), ev_version_minor(), ev_supported_backends());
+    if (!(ev_supported_backends() & EVBACKEND_EPOLL)) {
+        printf("FAIL wepoll/epoll backend unavailable\n");
+        WSACleanup();
+        return 1;
+    }
+    struct ev_loop *probe = ev_loop_new(EVBACKEND_EPOLL);
+    if (!probe || ev_backend(probe) != EVBACKEND_EPOLL) {
+        printf("FAIL explicit wepoll/epoll loop selected another backend\n");
+        if (probe) ev_loop_destroy(probe);
+        WSACleanup();
+        return 1;
+    }
+    ev_loop_destroy(probe);
 
     test_read();
     test_modify_regression();

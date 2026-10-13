@@ -364,7 +364,7 @@ Example: Replace the libev allocator with one that waits a bit and then
 retries.
 
    static void *
-   persistent_realloc (void *ptr, size_t size)
+   persistent_realloc (void *ptr, long size)
    {
      if (!size)
        {
@@ -1360,7 +1360,7 @@ for that:
 
    static void my_cb (struct ev_loop *loop, ev_io *w, int revents)
    {
-     ev_io_stop (w);
+     ev_io_stop (loop, w);
      ev_break (loop, EVBREAK_ALL);
    }
 
@@ -1803,12 +1803,15 @@ other events are pending:
    static void
    idle_cb (EV_P_ ev_idle *w, int revents)
    {
+     // stop the one-shot idle handoff before processing
+     ev_idle_stop (EV_A_ w);
+
      // actual processing
      read (STDIN_FILENO, ...);
 
      // have to start the I/O watcher again, as
      // we have handled the event
-     ev_io_start (EV_P_ &io);
+     ev_io_start (EV_A_ &io);
    }
 
    // initialisation
@@ -2019,7 +2022,7 @@ supported, but not specially optimized - if your program sometimes happens
 to generate this combination this is fine, but if it is easy to avoid
 starting an io watcher watching for no events you should do so.
 
-=item ev_io_modify (ev_io *, int events)
+=item ev_io_modify (loop, ev_io *, int events)
 
 Similar to C<ev_io_set>, but only changes the requested events. Using this
 might be faster with some backends, as libev can assume that the C<fd>
@@ -2483,12 +2486,12 @@ inactivity.
 
    ev_timer mytimer;
    ev_timer_init (&mytimer, timeout_cb, 0., 10.); /* note, only repeat used */
-   ev_timer_again (&mytimer); /* start timer */
+   ev_timer_again (loop, &mytimer); /* start timer */
    ev_run (loop, 0);
 
    // and in some piece of code that gets executed on any "activity":
    // reset the timeout to start ticking again at 10 seconds
-   ev_timer_again (&mytimer);
+   ev_timer_again (loop, &mytimer);
 
 
 =head2 C<ev_periodic> - to cron or not to cron?
@@ -3725,8 +3728,7 @@ an example that does that for some fictitious SIGUSR1 handler:
      while (queue_get (&data))
        process (data);
 
-     if (sigismember (&prev, SIGUSR1)
-       sigprocmask (SIG_UNBLOCK, &block, 0);
+     sigprocmask (SIG_SETMASK, &prev, 0);
    }
 
 (Note: pthreads in theory requires you to use C<pthread_setmask>
@@ -3857,7 +3859,7 @@ Example: wait up to ten seconds for data to appear on STDIN_FILENO.
        /* doh, nothing entered */;
    }
 
-   ev_once (STDIN_FILENO, EV_READ, 10., stdin_ready, 0);
+   ev_once (loop, STDIN_FILENO, EV_READ, 10., stdin_ready, 0);
 
 =item ev_feed_fd_event (loop, int fd, int revents)
 
@@ -3935,14 +3937,14 @@ real programmers):
    static void
    t1_cb (EV_P_ ev_timer *w, int revents)
    {
-     struct my_biggy big = (struct my_biggy *)
+     struct my_biggy *big = (struct my_biggy *)
        (((char *)w) - offsetof (struct my_biggy, t1));
    }
 
    static void
    t2_cb (EV_P_ ev_timer *w, int revents)
    {
-     struct my_biggy big = (struct my_biggy *)
+     struct my_biggy *big = (struct my_biggy *)
        (((char *)w) - offsetof (struct my_biggy, t2));
    }
 
@@ -4178,7 +4180,7 @@ event" primitive by changing C<EV_CB_DECLARE> and C<EV_CB_INVOKE> (note
 the differing C<;> conventions):
 
    #define EV_CB_DECLARE(type)   struct my_coro *cb;
-   #define EV_CB_INVOKE(watcher) switch_to ((watcher)->cb)
+   #define EV_CB_INVOKE(watcher, revents) switch_to ((watcher)->cb)
 
 That means instead of having a C callback function, you store the
 coroutine to switch to in each watcher, and instead of having libev call
@@ -4210,7 +4212,7 @@ files, F<my_ev.h> and F<my_ev.c> that include the respective libev files:
 
    // my_ev.h
    #define EV_CB_DECLARE(type)   struct my_coro *cb;
-   #define EV_CB_INVOKE(watcher) switch_to ((watcher)->cb)
+   #define EV_CB_INVOKE(watcher, revents) switch_to ((watcher)->cb)
    #include "../libev/ev.h"
 
    // my_ev.c
@@ -4699,6 +4701,7 @@ in your include path (e.g. in libev/ when using -Ilibev):
    ev_select.c     only when select backend is enabled
    ev_poll.c       only when poll backend is enabled
    ev_epoll.c      only when the epoll backend is enabled
+   wepoll.c        with the epoll backend on Windows only
    ev_linuxaio.c   only when the linux aio backend is enabled
    ev_iouring.c    only when the linux io_uring backend is enabled
    ev_kqueue.c     only when the kqueue backend is enabled
@@ -5011,11 +5014,11 @@ The name of the F<ev.h> header file used to include it. The default if
 undefined is C<"ev.h"> in F<event.h>, F<ev.c> and F<ev++.h>. This can be
 used to virtually rename the F<ev.h> header file in case of conflicts.
 
-=item EV_CONFIG_H (h)
+=item QB_EV_CONFIG_H (h)
 
-If C<EV_STANDALONE> isn't C<1>, this variable can be used to override
-F<ev.c>'s idea of where to find the F<config.h> file, similarly to
-C<EV_H>, above.
+The name of a configuration header included by F<ev.h> and F<ev.c> before
+their built-in defaults. Define it to a quoted or angle-bracket header name,
+for example C<< -DQB_EV_CONFIG_H=E<lt>config.hE<gt> >>.
 
 =item EV_EVENT_H (h)
 
@@ -5314,7 +5317,7 @@ that everybody includes and which overrides some configure choices:
    #define EV_SIGNAL_ENABLE 1
    #define EV_CHILD_ENABLE 1
    #define EV_USE_STDEXCEPT 0
-   #define EV_CONFIG_H <config.h>
+   #define QB_EV_CONFIG_H <config.h>
 
    #include "ev++.h"
 

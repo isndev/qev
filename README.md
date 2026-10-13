@@ -118,7 +118,10 @@ optional C++ wrapper is header-only.
 | Platform               | Default (auto)        | Also available                          | Last resort |
 |------------------------|-----------------------|-----------------------------------------|-------------|
 | Linux                  | `epoll`               | `io_uring`, `poll`; `linuxaio` if built in | `select`    |
-| macOS / FreeBSD / *BSD | `kqueue`              | `poll`                                  | `select`    |
+| macOS                  | `kqueue`              | —                                       | `select`    |
+| NetBSD                 | `kqueue`              | `poll`                                  | `select`    |
+| FreeBSD                | `select`              | —                                       | —           |
+| other BSDs             | `poll`                | —                                       | `select`    |
 | Solaris / illumos      | event `port`          | `poll`                                  | `select`    |
 | Windows                | `epoll` (wepoll/IOCP) | —                                       | `select`    |
 
@@ -189,7 +192,7 @@ and struct layouts are libev's; this is maintenance, not a redesign.
 The backends:
 
 - **`io_uring` rewritten from scratch** — kernel-ABI based, ring-layout validation,
-  CQ-overflow recovery, `MAP_POPULATE` fallback, bounded drain/spin/EINTR budgets, full
+  CQ-overflow recovery, `MAP_POPULATE` fallback, bounded drain/spin budgets, full
   cleanup on every init-failure path — and, in 5.1, **measured against `epoll` on the same
   loop and brought to parity**: a non-blocking pass over one quiet socket cost 1345 ns
   against 28.3 because a deadline timerfd was re-armed at "now" on every poll; it now costs

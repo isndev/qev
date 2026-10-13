@@ -372,7 +372,9 @@ if cmake -S . -B b-reduced -DCMAKE_BUILD_TYPE=Release -DQB_EV_WATCHERS_FULL=OFF 
     ./b-reduced/qev-test-watchers >b-reduced-watchers.log 2>&1
     RED_RC=$?
     RED=$(grep '== watchers' b-reduced-watchers.log || true)
-    if [ "$RED_RC" -eq 0 ] && [ -n "$RED" ] && ! printf '%s\n' "$RED" | grep -Eq '[1-9][0-9]* failed|[1-9][0-9]* skipped'; then
+    # The reduced profile skips five watcher families by design. Require the
+    # eight runnable cases, no failures, and no unexpected extra skips.
+    if [ "$RED_RC" -eq 0 ] && printf '%s\n' "$RED" | grep -Eq '^== watchers: ([89]|[1-9][0-9]+) run, 0 failed, [0-5] skipped ==$'; then
       res reduced-profile PASS "$(echo "$RED" | tr -d '=' | sed 's/^ *//;s/ *$//')"
     else
       res reduced-profile FAIL "exit=$RED_RC ${RED:-no summary line}"

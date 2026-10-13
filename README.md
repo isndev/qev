@@ -47,8 +47,8 @@ and Redis modules on top. [More below](#need-more-than-an-event-loop).
 libev is one of the best event loops ever written, and it stopped. The last release
 was 4.33 in 2020, and the platforms moved on underneath it:
 
-- **macOS and the BSDs** were served by `select` — capped at `FD_SETSIZE` (1024
-  descriptors) and `O(N)` on every wait. `qev` uses **`kqueue`**.
+- **macOS and NetBSD** now default to **`kqueue`**. Other BSD defaults remain
+  conservative: `select` on FreeBSD and `poll` on the other BSDs.
 - **Windows** had `select` and nothing else. `qev` ships a real **`epoll`** backend
   built on IOCP (via wepoll) with a correct `SOCKET ↔ fd` registry, so `ev_io` watches
   native winsock handles. Upstream's `_osfhandle` aliasing never actually worked.
@@ -201,8 +201,8 @@ The backends:
   `SOCKET ↔ fd` registry, five wepoll fixes of our own, a wepoll test suite that runs
   through wepoll rather than around it, and the loop's clocks on
   `QueryPerformanceCounter` instead of the 15.6 ms system tick.
-- **`kqueue` on macOS and the BSDs** instead of `select`: no `FD_SETSIZE` ceiling,
-  `O(active)` scaling.
+- **`kqueue` on macOS and NetBSD** instead of `select`: no `FD_SETSIZE` ceiling,
+  `O(active)` scaling. FreeBSD defaults to `select`; the other BSDs default to `poll`.
 - **`epoll_pwait2`** on Linux 5.11+: a blocking wait asked for in nanoseconds, honoured to
   the thread's timer slack — a parked loop meets a timer under a millisecond.
 - **`EPOLLRDHUP` TCP half-close** reported consistently across backends.

@@ -43,8 +43,9 @@ Platform defaults and backends:
 
 =item *
 
-macOS and the BSDs now default to C<kqueue> instead of C<select> (which was capped
-at C<FD_SETSIZE> and O(N) per poll).
+macOS and NetBSD now default to C<kqueue> instead of C<select> (which was capped
+at C<FD_SETSIZE> and O(N) per poll). FreeBSD defaults to C<select>, while the
+other BSDs default to C<poll>.
 
 =item *
 

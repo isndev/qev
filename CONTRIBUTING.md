@@ -31,9 +31,10 @@ it as `libqb-ev.a`. Two consequences you will run into:
    that does not also land in qb's tree will be caught — qb's development superproject
    runs a byte-identity check over the shared files on every verification pass. Land both
    sides, or the next person inherits a divergence.
-2. **qb builds a reduced profile.** Seven watcher families (idle, prepare, check, fork,
-   child, async, embed) are compiled out there, so `struct ev_loop` has a different layout
-   under qb than in a standalone build. If your change touches anything gated on
+2. **qb builds a reduced profile.** Six watcher families (idle, prepare, check, fork,
+   child, embed) are compiled out there; `async` stays enabled as qb's seventh family for
+   cross-thread wakeups. `struct ev_loop` therefore has a different layout under qb than
+   in a standalone build. If your change touches anything gated on
    `EV_*_ENABLE`, test both: `-DQB_EV_WATCHERS_FULL=ON` and `=OFF`. The matrix's
    `reduced-profile` cell does this on every run, so a change that only compiles under
    the full profile is caught rather than discovered by qb.

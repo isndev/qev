@@ -8,6 +8,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **Build guide describes the CMake switches actually used (Huly QB-738).**
+  `BUILD_TESTING` affects the default test target only; standalone benchmark targets
+  have their own switch, and the reduced watcher profile still enables async.
 - **Build and CI checks report the artifact they actually tested (Huly QB-314, QB-729–735,
   QB-739, QB-740, QB-742, QB-743).**
   Autotools leaves the libevent shim off unless requested; the build tree stages its optional

@@ -332,6 +332,11 @@ Everything a distribution needs is generated rather than curated by hand.
   cpack --config CPackSourceConfig.cmake -G TGZ       # source release
   ```
 
+  Release CI opens both component archives and checks their actual contents: Runtime needs
+  the platform loader object and loader name, Development needs `include/qev/ev.h`, and
+  both need their license notices. Published assets are accepted only with the exact
+  seven-file checksum set and provenance bound to the release tag and workflow.
+
 - **A Debug and a Release build share a prefix** — `DEBUG_POSTFIX` makes the debug
   archive `libqevd.a`, so the second install cannot silently overwrite the first.
 

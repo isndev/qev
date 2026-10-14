@@ -36,42 +36,39 @@ jobs:
           cmake --build build --config Release
       - name: Package
         working-directory: build
+        env:
+          COPYFILE_DISABLE: '1'
         run: cpack -G TGZ -C Release
-      # A release archive nobody opened is a release archive that might be empty. Unpack the
-      # listing and require the header to be inside before it goes near a release page.
-      #
-      # No pipe into `head` or `grep -q` here, and that is not style. GitHub runs `shell: bash` as
-      # `bash -eo pipefail`, and both of those close the pipe as soon as they have what they want,
-      # which kills `tar` with SIGPIPE -- so the pipeline fails on a PERFECTLY GOOD archive. That is
-      # exactly what happened on the first run of this job: the listing printed include/qev/ev.h and
-      # the step still reported it missing. The listing goes to a file, and the file is searched.
-      - name: Verify the archives are not empty
+      # Opening an archive and finding a notice is not proof of a runtime package. Require the
+      # platform loader artefacts: full version + SONAME on ELF, full version + install-name
+      # symlink on Darwin, and qev.dll on Windows. The checker's fixtures reject notices-only
+      # archives and a Unix archive missing its loader name before inspecting the real output.
+      - name: Verify component archive contracts
         shell: bash
         working-directory: build
         run: |
-          set -e
-          found=0
-          for a in *.tar.gz; do
-            [ -e "$a" ] || continue
-            found=$((found+1))
-            echo "-- $a"
-            tar tzf "$a" > "$a.list"
-            sed -n '1,20p' "$a.list" | sed 's/^/     /'
-          done
-          [ "$found" -ge 1 ] || { echo "::error::cpack produced no archive"; exit 1; }
-          dev=$(ls *Development*.tar.gz.list 2>/dev/null | head -1) || true
-          [ -n "$dev" ] || { echo "::error::no development archive was produced"; exit 1; }
-          grep -q 'include/qev/ev\.h' "$dev" \
-            || { echo "::error::the development archive carries no ev.h"; exit 1; }
-          # No archive may be trivially empty. An empty tarball is ~29 bytes and looks like a
-          # successful package right up until somebody downloads it; requiring an entry per
-          # archive is what turns that into a failed build instead of a bad release page.
-          for l in *.tar.gz.list; do
-            n=$(grep -c . "$l" || true)
-            echo "   ${l%.list}: $n entr(y|ies)"
-            [ "$n" -ge 1 ] || { echo "::error::${l%.list} is empty"; exit 1; }
-          done
-          rm -f ./*.list
+          set -euo pipefail
+          version=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' ../CMakeLists.txt)
+          system=$(sed -nE 's/^set\(CPACK_SYSTEM_NAME "([^"]+)"\)$/\1/p' CPackConfig.cmake)
+          [ -n "$version" ] && [ -n "$system" ] \
+            || { echo "::error::cannot derive qev version or CPack system name"; exit 1; }
+          case "${RUNNER_OS:?}" in
+            Windows) python_cmd=python ;;
+            Linux|macOS) python_cmd=python3 ;;
+            *) echo "::error::unsupported runner OS: $RUNNER_OS"; exit 1 ;;
+          esac
+          command -v "$python_cmd" >/dev/null \
+            || { echo "::error::$python_cmd is unavailable on $RUNNER_OS"; exit 1; }
+          "$python_cmd" -c 'import sys, tarfile; assert sys.version_info >= (3, 10); print(sys.executable, sys.version)'
+          # CPack/libarchive on macOS can encode inherited com.apple.provenance as
+          # ._* sidecars even after xattr -cr and COPYFILE_DISABLE=1. Rewrite only
+          # those sidecars, preserving every other tar member and loader alias.
+          if [ "$RUNNER_OS" = macOS ]; then
+            "$python_cmd" ../scripts/normalize-release-archives.py --self-test
+            "$python_cmd" ../scripts/normalize-release-archives.py --directory . --system "$system" --version "$version"
+          fi
+          "$python_cmd" ../scripts/check-release-archives.py --self-test
+          "$python_cmd" ../scripts/check-release-archives.py --directory . --system "$system" --version "$version"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

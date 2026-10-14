@@ -8,6 +8,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **Release checks cannot certify cached refs or sweep unrelated files into a version roll
+  (Huly QB-717, QB-1038).** The qev train requires fresh develop/main fetches for qev, qb and
+  the root, treats ordinary untracked files as dirty, and stages only the six files it owns.
+- **Release archives are checked against their platform contents (Huly QB-741).** The release
+  workflow rejects notices-only, empty, unsafe or ambiguously named component archives.
+  A deterministic macOS post-processing step removes inherited AppleDouble metadata
+  sidecars before the archive content check and upload.
+  Runtime carries the real loader artifact and loader name on Linux and Darwin, or qev.dll on
+  Windows; Development carries `include/qev/ev.h`. Both carry nonempty license notices.
+  Download verification requires the exact seven archives and SHA256SUMS coverage, source
+  content without extraction, and provenance tied to the release tag and workflow.
 - **Build guide describes the CMake switches actually used (Huly QB-738).**
   `BUILD_TESTING` affects the default test target only; standalone benchmark targets
   have their own switch, and the reduced watcher profile still enables async.

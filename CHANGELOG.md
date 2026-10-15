@@ -187,6 +187,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   pre-existing qb files, and a failed wrap-header preprocessor. Loop and wepoll tests now
   exercise the intended rearm, isolation, concurrent initialization, and backend paths.
   Benchmark labels no longer claim a backend or descriptor count they did not measure.
+- **`test_clock_resolution` no longer fails on a loaded host (Huly QB-1056).** It opened its 50 ms
+  window before taking the loop's first reading and took its last reading before the check that
+  closed it, so a preemption at either end left the loop's clock measuring less than the window:
+  pinned to two CPUs beside four busy processes, 6 to 10 runs in 200 failed on Linux, 91 in 200
+  on Windows. The readings now bracket the window -- the first before it opens, one more after it
+  closed -- and the upper bound is the wall time the readings spanned rather than a constant: 0 in
+  200 under the same load on both. A clock quantised to the 15.625 ms system tick still fails it.
 - **`ev_timer_next`'s documentation states the loop's strict due rule.** `docs/ev.pod` and the comment
   above the function in `ev.c` said a deadline at or before the embedder's reading is due; `timers_reify`
   fires a timer only when its deadline is strictly before the loop's time (`ANHE_at (timers [HEAP0]) <

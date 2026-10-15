@@ -1367,24 +1367,36 @@ static void test_linuxaio_fallback(void) {
 /* On Windows libev read both its clocks from GetSystemTimeAsFileTime, the system tick -- 1 to
  * 15.6 ms steps -- and judged every timer against it; qev reads QueryPerformanceCounter. A
  * timer started and run inside one tick is the shape test_io_count begins with, and it is why
- * that case failed on MSVC before this one existed. */
+ * that case failed on MSVC before this one existed.
+ * The loop's readings BRACKET the 50 ms window (Huly QB-1056): the first is taken before the
+ * window opens, one more after it closed, and the wall clock is read around both. Read the other
+ * way round -- the window opened, then the first reading, the last one before the check that
+ * closed it -- a preemption at either end left the loop's clock measuring less than the 50 ms, and
+ * the test failed about once in ten runs on a loaded host. The upper bound is the wall time the
+ * readings actually spanned, not a constant a long stall can exceed. */
+static ev_tstamp clock_reading(struct ev_loop *l, ev_tstamp last, int *distinct, int *backwards) {
+    ev_tstamp now;
+    ev_now_update(l);
+    now = ev_now(l);
+    if (now != last) ++*distinct;
+    if (now < last) ++*backwards;
+    return now;
+}
 static void test_clock_resolution(void) {
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
-    ev_tstamp t0 = ev_time(), first, last;
+    ev_tstamp w0, w1, t0, first, last;
     int distinct = 0, backwards = 0;
+    w0 = ev_time();
     ev_now_update(l);
     first = last = ev_now(l);
-    while (ev_time() - t0 < 0.05) {       /* 50 ms of back-to-back reads */
-        ev_tstamp now;
-        ev_now_update(l);
-        now = ev_now(l);
-        if (now != last) ++distinct;
-        if (now < last) ++backwards;
-        last = now;
-    }
+    t0 = ev_time();
+    while (ev_time() - t0 < 0.05)        /* 50 ms of back-to-back reads */
+        last = clock_reading(l, last, &distinct, &backwards);
+    last = clock_reading(l, last, &distinct, &backwards); /* after the window closed */
+    w1 = ev_time();
     OK(distinct >= 1000, "ev_now moves at least 1000 times in 50 ms of back-to-back reads: a clock finer than 50 us, not the system tick");
     OK(backwards == 0, "ev_now never steps back across back-to-back reads");
-    OK(last - first >= 0.045 && last - first <= 0.5, "and the loop's clock measures the 50 ms the wall clock did");
+    OK(last - first >= 0.045 && last - first <= w1 - w0 + 0.005, "and the loop's clock measures the 50 ms the wall clock did, and no more than the wall clock spanned");
     ev_loop_destroy(l);
 }
 

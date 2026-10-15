@@ -97,6 +97,69 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   structures (the fd lists, the timer heap, the pending queues), frees it once, and invokes
   nothing. Witness: `test_once` with a counting `ev_set_allocator` (four teardown shapes, two more
   on POSIX; floor 4 -> 8). `tests/test-loops.c`'s unconditional floor is 48 -> 52.
+- **libevent compatibility: `event_del` cancels an activation still pending (Huly QB-712).** It
+  stopped the timeout only when the timer was active, and `event_active (ev, EV_TIMEOUT, …)` makes
+  it pending without starting it, so the callback ran on the next pass after the removal -- and a
+  caller that freed the event at once left the loop a pending pointer into freed memory (ASan:
+  heap-use-after-free in `ev_invoke_pending` on `b1c7843`, clean after). The io
+  watcher of an event with no fd interest, made pending by `event_active (ev, EV_READ, …)`, was
+  not stopped either. `event_del` now stops the signal or io watcher and the timer
+  unconditionally: a stop clears a pending activation and does nothing more to an inactive
+  watcher. `tests/test-event-compat.c`, the first test of the layer, checks each activation kind
+  deleted and kept, and a timeout armed then deleted; on `b1c7843` the two deleted activations ran
+  their callback once each. The build matrix now builds the opt-in profile
+  (`QB_EV_USE_LINUXAIO=ON`, `QB_EV_LIBEVENT_COMPAT=ON`), which no cell had compiled, runs the loop
+  suite over it -- on Linux its aio cases must run -- and runs this test.
+- **C++ wrapper: three members that never compiled or never did their job (Huly QB-312, QB-313,
+  QB-711).** The wrapper is templates, and a member nothing instantiates is never compiled:
+  `w (revents)` passed the watcher where the callback takes the loop and did not compile as soon
+  as it was used (QB-312) -- it now invokes the callback as `ev_invoke` would, with the watcher's
+  loop, the watcher and `revents`; `ev::embed::start (loop)` resolved to the base's `set (loop)`,
+  moving the watcher to the loop it was meant to embed and leaving that loop unset (QB-313) -- it
+  calls `set_embed` and the watcher stays on its own loop; and under `EV_MULTIPLICITY=0`, the
+  single-loop embedding profile `docs/ev.pod` says the wrapper supports, the three callback
+  thunks named a `loop` parameter that profile does not have, so `ev++.h` did not compile at all
+  (QB-711), and `loop_ref`'s comparisons left a parameter unused. `tests/test-cxx.cpp`
+  instantiates and drives every callback form, calls each directly, checks the loop a direct call
+  passes on two loops, and embeds a loop with `start (loop)` across a stop and a second start; the
+  matrix builds it against the library and in the single-loop profile (`ev.c` compiled in under
+  `EV_MULTIPLICITY=0`), warning-free with `-Wall -Wextra` under gcc and clang. `docs/ev.pod`
+  documents the direct call and what `start (loop)` does for `ev::embed`.
+- **io_uring: a watcher on descriptor 0 fires (Huly QB-336).** Each poll is tagged
+  `fd | generation << 32`, and the first registration of descriptor 0 is the tag 0, which the
+  completion drain skipped as if it were a sentinel: the readiness was dropped and the one-shot
+  poll never re-armed, so a watcher on fd 0 -- stdin, or the first socket of a daemon that closed
+  it -- never fired. The one reserved tag is a POLL_REMOVE's own, whose low half is no descriptor.
+  `tests/test-loops.c` `test_iouring_fd_zero` makes fd 0 a pipe before the loop exists and needs
+  two events, the second only reachable through the re-arm; its control stops the watcher (silent,
+  the cancelled poll's old generation ignored) and restarts it (generation 1, one event).
+- **io_uring: a loop handed from thread to thread keeps working (Huly QB-744).** `docs/ev.pod`
+  (THREADS) lets one loop be called from several threads as long as the calls never overlap, but
+  the ring was created `IORING_SETUP_SINGLE_ISSUER`, which binds submission to the creating thread:
+  the first SQE another thread submitted failed `EEXIST` and went to `ev_syserr`, an abort by
+  default. Without `DEFER_TASKRUN` the flag only recorded and checked that thread (Linux 6.6), so it
+  is dropped and `COOP_TASKRUN | TASKRUN_FLAG` stay -- which a 5.19 kernel, refusing the
+  then-unknown `SINGLE_ISSUER` (6.0), had dropped too, falling back to no flag at all (not
+  measured: the host runs 6.6). The case then found a second way to lose a
+  handed-over loop: the kernel completes a poll whose submitting thread has exited `-ECANCELED`
+  once its fd is ready, and the drain dropped every `-ECANCELED`, so the watcher went silent for
+  good. A current-generation poll that ends without an event -- 0, `-ECANCELED`, `-EINTR`,
+  `-ENOENT` -- is now re-armed and resubmitted from the thread running the loop; a cancellation of
+  ours still carries an older generation and is still ignored. `test_iouring_thread_handoff` creates
+  and arms the loop on one thread, hands it to a second that completes that poll, registers and
+  re-arms its own, and takes it back after the second has exited: 2 of 6 rounds and 2 syserr before,
+  4 of 6 with the flag alone dropped, 6 of 6 after. The drain tests `res <= 0` once instead of
+  twice: callgrind over 10 000 passes, `iouring_cq_drain` level at one completion a pass
+  (1 130 000 Ir both) and 14 030 000 → 13 880 000 Ir at sixteen.
+- **Linux aio: the backend frees its arrays at teardown and when it falls back to epoll
+  (Huly QB-338).** It grows two pointer arrays, the per-fd iocb table and the `io_submit` batch;
+  its destroy freed the iocbs but neither array, and its permanent switch to epoll, after which no
+  destroy of this backend runs, dropped them too. Both now go through `linuxaio_free_arrays`; a
+  fork or a regrow of the aio context keeps them, as before, to reuse their capacity. Three cases in
+  `tests/test-loops.c` count live blocks through `ev_set_allocator` with the backend really active
+  (`QB_EV_USE_LINUXAIO=ON`): three create/destroy cycles left 6 blocks, a regrow past the first
+  context 2, the fallback to epoll -- forced by taking the system aio quota for the passes that
+  need it -- 2; each now ends at 0, still delivering on every watcher.
 - **Release checks cannot certify cached refs or sweep unrelated files into a version roll
   (Huly QB-717, QB-1038).** The qev train requires fresh develop/main fetches for qev, qb and
   the root, treats ordinary untracked files as dirty, and stages only the six files it owns.

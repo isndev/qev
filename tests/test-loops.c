@@ -533,8 +533,10 @@ static void test_nowait_clock(void) {
 /* A non-blocking pass with the flag reifies timers and invokes pending events but never calls
  * the backend poll; the next pass without it delivers what the fd holds; a BLOCKING pass ignores
  * the flag, because with an fd to wait on the poll is the wake. */
+#ifndef _WIN32
 static int nopoll_io_hits;
 static void nopoll_io_cb(struct ev_loop *l, ev_io *w, int r) { char c; (void)l; (void)r; (void) !read(w->fd, &c, 1); ++nopoll_io_hits; } /* drains, so the fd is quiet again */
+#endif /* POSIX read(): its one user is the pipe half below (an implicit declaration under clang-cl's C99) */
 static void test_nopoll(void) {
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
     ev_timer t;

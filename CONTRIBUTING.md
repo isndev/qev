@@ -61,8 +61,10 @@ autotools is maintained alongside:
 
 Run the full matrix — CMake static and shared, autotools through `make install`, a
 `find_package(qev)` consumer in both link modes, ASan/UBSan, every backend, the C++
-wrapper, the exported-symbol census, the shared-prefix install check, the reduced
-watcher profile qb ships, and a regeneration of `ev_wrap.h`:
+wrapper suite (`tests/test-cxx.cpp`) against the library and in the single-loop
+`EV_MULTIPLICITY=0` profile, the opt-in profile (Linux aio backend and libevent shim,
+with `tests/test-event-compat.c`), the exported-symbol census, the shared-prefix install
+check, the reduced watcher profile qb ships, and a regeneration of `ev_wrap.h`:
 
 ```sh
 bash scripts/test-build-matrix.sh native

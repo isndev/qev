@@ -231,10 +231,12 @@ Everything else:
 - **Modern build** — CMake package config, pkg-config, CPack, component-aware install,
   autotools kept and working and, since 5.1, building the same full library as CMake;
   SPDX headers; MIT.
-- **Two test suites of its own** — watchers (every family, refusing to compile against a
+- **Test suites of its own** — watchers (every family, refusing to compile against a
   standalone library missing one) and loop mechanics (multi-loop isolation, timer pacing,
   priorities, `ev_feed_event`, a real `fork()`, a cross-thread `ev_async_send`, a thousand
-  concurrent timers, the io_uring/epoll parity check).
+  concurrent timers, the io_uring/epoll parity check); on Windows, the wepoll backend over
+  native sockets and a white-box suite of the process-wide state (the `SOCKET ↔ fd` registry
+  under allocation failure, the clock caches started cold from several threads).
 
 [CHANGELOG.md](CHANGELOG.md) carries the complete, file-by-file list.
 

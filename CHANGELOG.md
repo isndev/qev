@@ -192,15 +192,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   `scripts/test-build-matrix.sh`, which runs on Linux and macOS; the Windows CI job runs `ctest`,
   so neither had ever run on Windows. Both are registered now, as `cxx` and `event-compat`: the
   first links the library, with C++ enabled for that target alone (a host without a C++ compiler
-  says so and builds the rest); the second links it when `QB_EV_LIBEVENT_COMPAT=ON` and otherwise
+  says so and builds the rest) and built at C++17 -- at MSVC's and clang-cl's C++14 default,
+  clang-cl warned that `ev.h`'s and `ev++.h`'s noexcept function-pointer parameters mangle
+  differently in C++17; the second links it when `QB_EV_LIBEVENT_COMPAT=ON` and otherwise
   compiles `event.c` in itself, beside the headers that option stages, so every build checks the
-  layer. The matrix keeps its cells -- the single-loop `EV_MULTIPLICITY=0` profile, a compile
-  without a warning -- and its full-suites cell, like the Windows job, now requires every suite
-  registered (at least 4 on POSIX, 6 on Windows, where 4 registered before). A sanitizer build
-  with the tests on hands its flags to `CMAKE_CXX_FLAGS` as well as to `CMAKE_C_FLAGS`, as the
-  matrix's ASan/UBSan cell now does: the C++ suite links the instrumented library, and clang++,
-  unlike g++, does not pull the runtime in from C's implicit libraries. The matrix's symbol
-  census counts `.bss` symbols as well: `ev_default_loop_ptr`, the one exported variable, is
+  layer. A build sanitized through the C flags alone -- the library is C -- still links the C++
+  suite against its instrumented archive: the suite takes the sanitizer options of
+  `CMAKE_C_FLAGS` and `CMAKE_C_FLAGS_<CONFIG>`, those alone, for its own compile and link
+  (clang++ has no runtime otherwise; g++ pulled it in from C's implicit libraries), and the
+  matrix's ASan/UBSan cell, configured that way, now runs it. The matrix keeps its cells -- the
+  single-loop `EV_MULTIPLICITY=0` profile, a compile without a warning -- and its full-suites
+  cell, like the Windows job, now requires every suite registered (at least 4 on POSIX, 6 on
+  Windows, where 4 registered before). The matrix's symbol census counts `.bss` symbols as well: `ev_default_loop_ptr`, the one exported variable, is
   zero-initialised, and the `T`/`D`/`S` filter printed 85 `ev_*` where the archive exports 86,
   the count `Symbols.ev` lists; the line now reads `86 ev_* (85 functions, 1 data)`.
 - **`test_clock_resolution` no longer fails on a loaded host (Huly QB-1056).** It opened its 50 ms

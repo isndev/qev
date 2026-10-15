@@ -283,19 +283,21 @@ else res autotools-configure-make SKIP "no autoreconf on host"; res autotools-sh
 # libev's intentional callback function-pointer type-pun (the common-initial-
 # sequence idiom central to the ev_* API). Exclude it on clang ONLY; gcc neither
 # supports nor enables the function sanitizer for C. All other checks stay on.
-# The flags go to C++ as well: the ev++.h suite links this instrumented library (Huly QB-1071), and
-# clang++, unlike g++, does not pull the sanitizer runtime in from C's implicit link libraries.
+# The flags go to C alone, as a consumer sanitizes a C library. The build still links the ev++.h
+# suite, a C++ program, against this instrumented archive: it takes the C flags' sanitizer options
+# itself (Huly QB-1071; clang++ has no runtime otherwise), and it runs here under them.
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
 case "$($CC --version 2>&1)" in *clang*) SAN="$SAN -fno-sanitize=function";; esac
-if cmake -S . -B b-san -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" >b-san-cfg.log 2>&1 \
+if cmake -S . -B b-san -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="$SAN" >b-san-cfg.log 2>&1 \
    && cmake --build b-san -j >b-san.log 2>&1 \
    && SANLIB=$(ls b-san/libqev*.a 2>/dev/null | head -1) \
    && [ -n "$SANLIB" ] \
    && $CC $SAN smoke.c -Ib-san/include -Ib-san "$SANLIB" -lm -o smoke_san >san-link.log 2>&1; then
   LEAK=0; [ "$(uname -s)" = Linux ] && LEAK=1   # detect_leaks unsupported on macOS ASan
-  if ASAN_OPTIONS=detect_leaks=$LEAK UBSAN_OPTIONS=halt_on_error=1 ./smoke_san >san-run.log 2>&1; then
-    res asan-ubsan-smoke PASS "$(grep -m1 ticks san-run.log)"
-  else res asan-ubsan-smoke FAIL "sanitizer: $(grep -iE 'runtime error|ERROR|leak' san-run.log|head -1)"; fi
+  if ASAN_OPTIONS=detect_leaks=$LEAK UBSAN_OPTIONS=halt_on_error=1 ./smoke_san >san-run.log 2>&1 \
+     && ASAN_OPTIONS=detect_leaks=$LEAK UBSAN_OPTIONS=halt_on_error=1 ./b-san/qev-test-cxx >san-cxx.log 2>&1; then
+    res asan-ubsan-smoke PASS "$(grep -m1 ticks san-run.log); $(grep '== cxx' san-cxx.log | tr -d '=' | sed 's/^ *//;s/ *$//')"
+  else res asan-ubsan-smoke FAIL "sanitizer: $(grep -iE 'runtime error|ERROR|leak|FAIL' san-run.log san-cxx.log 2>/dev/null|head -1)"; fi
 else res asan-ubsan-smoke FAIL "build/link: $(tail -2 b-san.log san-link.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # ---- cell: per-backend smoke ---------------------------------------------

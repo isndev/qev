@@ -7,7 +7,7 @@
  * The bundled wepoll is the fork's headline feature -- a real epoll on Windows
  * where upstream libev only ever offered select -- and until this file it had
  * no dedicated test: the watcher suite runs its io cases behind #ifndef _WIN32.
- * Six cases over native winsock SOCKETs, driven under watchdogs:
+ * Seven cases over native winsock SOCKETs, driven under watchdogs:
  *
  *   1. EV_READ delivery through wepoll on a loopback TCP pair.
  *   2. THE REGRESSION THAT MOTIVATED THE FORK: widening a live watcher's
@@ -28,6 +28,9 @@
  *      flag. The IOCP wait is what the flag saves on Windows (~245 of an io
  *      pass's 275 ns), so this is the platform whose skip matters most; the
  *      POSIX twin of the case lives in test-loops.c over a pipe.
+ *   7. Several watchers on one SOCKET (QB-317): stopping one leaves the other
+ *      registered with wepoll, and the last one stopped and restarted before
+ *      the next pass is registered again.
  *
  * HOW A SOCKET REACHES THE LOOP, AND WHY EVERY VERDICT CHECKS EV_ERROR. A win32
  * ev_io names its socket through ev_io_init_sock / ev_io_set_sock (the handle
@@ -282,6 +285,82 @@ static void test_nopoll_socket(void) {
     closesocket(a); closesocket(b);
 }
 
+/* ---- 7. several watchers on one SOCKET: a stop keeps the others registered (QB-317) ----
+   A SOCKET may carry several ev_io watchers; they share its registry fd and ANFD, and fd_reify
+   tells wepoll only the AGGREGATE mask, and only when it changes. ev_io_stop deleted the socket's
+   wepoll registration unconditionally: stopping one of two READ watchers left the aggregate READ,
+   fd_reify saw nothing to change, and the survivor stayed active in the loop and unknown to wepoll
+   -- no event, ever. The same desynchronisation took the last watcher stopped and started again
+   (no ev_io_set) before the next pass: the registration was gone, the mask unchanged, nothing
+   re-added it. Every verdict is a NEW byte sent after the stop, readable before the run, delivered
+   under a 2 s watchdog; the callbacks only count (two of them reading one byte could block) and the
+   round drains afterwards. A narrowed aggregate (READ|WRITE -> READ) is fd_reify's to MOD, and is
+   kept as the control that worked before. The final stop's eager DEL stays: case 2's
+   stop / set / start covers it. */
+static int dw_hits[2], dw_error, dw_want;
+static void dw_cb(struct ev_loop *l, ev_io *w, int r) {
+    int i = (int) (intptr_t) w->data;
+    if (r & EV_ERROR) { dw_error = 1; ev_break(l, EVBREAK_ALL); return; }
+    if (r & EV_READ) ++dw_hits[i];
+    if ((!(dw_want & 1) || dw_hits[0]) && (!(dw_want & 2) || dw_hits[1])) ev_break(l, EVBREAK_ALL);
+}
+/* One byte from a to b, then a blocking run until every watcher in `want` (bit i = dw watcher i)
+   has seen EV_READ or the watchdog fires; returns 0 when b was readable before the run. */
+static int dw_round(struct ev_loop *l, SOCKET a, SOCKET b, int want) {
+    char     buf[8];
+    ev_timer wd;
+    dw_hits[0] = dw_hits[1] = 0; dw_error = 0; dw_want = want;
+    send(a, "x", 1, 0);
+    if (!wait_readable(b)) return -1;
+    ev_timer_init(&wd, wd_cb, 2.0, 0.0); ev_timer_start(l, &wd);
+    ev_run(l, 0);
+    ev_timer_stop(l, &wd);
+    recv(b, buf, 1, 0); /* drain: b was readable, so this cannot block */
+    return 0;
+}
+static void test_shared_socket(void) {
+    SOCKET a, b;
+    if (tcp_pair(&a, &b)) { SKIP("several watchers on one SOCKET", "loopback pair failed"); return; }
+    {
+        struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
+        ev_io wa, wb;
+        ev_io_init_sock(&wa, dw_cb, b, EV_READ); wa.data = (void *) (intptr_t) 0; ev_io_start(l, &wa);
+        ev_io_init_sock(&wb, dw_cb, b, EV_READ); wb.data = (void *) (intptr_t) 1; ev_io_start(l, &wb);
+        OK(dw_round(l, a, b, 3) == 0 && dw_hits[0] && dw_hits[1] && !dw_error && wa.fd == wb.fd,
+           "two READ watchers on one SOCKET share its registry fd and both see a byte through wepoll");
+        ev_io_stop(l, &wa);
+        OK(dw_round(l, a, b, 2) == 0 && dw_hits[1] && !dw_error && ev_is_active(&wb),
+           "after one of them stops, the other still sees the next byte: the shared registration was not deleted under it (QB-317)");
+        ev_io_stop(l, &wb);
+        ev_loop_destroy(l);
+    }
+    {
+        struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
+        ev_io wa, wb;
+        ev_io_init_sock(&wa, dw_cb, b, EV_WRITE); wa.data = (void *) (intptr_t) 0; ev_io_start(l, &wa);
+        ev_io_init_sock(&wb, dw_cb, b, EV_READ);  wb.data = (void *) (intptr_t) 1; ev_io_start(l, &wb);
+        ev_run(l, EVRUN_NOWAIT);                 /* registered as READ|WRITE */
+        ev_io_stop(l, &wa);
+        OK(dw_round(l, a, b, 2) == 0 && dw_hits[1] && !dw_error,
+           "control: when the stop narrows the aggregate (READ|WRITE -> READ), the survivor still sees the next byte");
+        ev_io_stop(l, &wb);
+        ev_loop_destroy(l);
+    }
+    {
+        struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
+        ev_io wc;
+        ev_io_init_sock(&wc, dw_cb, b, EV_READ); wc.data = (void *) (intptr_t) 0; ev_io_start(l, &wc);
+        dw_round(l, a, b, 1);                    /* registered and delivered once */
+        ev_io_stop(l, &wc);                      /* the last watcher: the eager DEL ... */
+        ev_io_start(l, &wc);                     /* ... and back before any pass, without ev_io_set_sock */
+        OK(dw_round(l, a, b, 1) == 0 && dw_hits[0] && !dw_error,
+           "the last watcher stopped and started again before the next pass still sees the next byte: the eager DEL is re-added (QB-317)");
+        ev_io_stop(l, &wc);
+        ev_loop_destroy(l);
+    }
+    closesocket(a); closesocket(b);
+}
+
 int main(void) {
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -310,16 +389,17 @@ int main(void) {
     test_many_sockets();
     test_accept();
     test_nopoll_socket();
+    test_shared_socket();
 
     printf("\n== wepoll: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
     WSACleanup();
 
-    /* All thirteen checks are unconditional on Windows (read 3, modify 2, half-close 1,
-       64 pairs 1, accept 1, NOPOLL 5 -- the first five cases' checks measured nothing
-       until QB-194, see the header); a run that skipped its way to zero measured nothing
+    /* All seventeen checks are unconditional on Windows (read 3, modify 2, half-close 1,
+       64 pairs 1, accept 1, NOPOLL 5, shared socket 4 -- the first five cases' checks measured
+       nothing until QB-194, see the header); a run that skipped its way to zero measured nothing
        and must not read as a pass. */
-    if (g_run < 13) {
-        printf("== FAIL: only %d checks ran; all 13 are unconditional on Windows ==\n", g_run);
+    if (g_run < 17) {
+        printf("== FAIL: only %d checks ran; all 17 are unconditional on Windows ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

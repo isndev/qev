@@ -551,6 +551,15 @@ When this flag is specified, then libev will avoid to modify the signal
 mask. Specifically, this means you have to make sure signals are unblocked
 when you want to receive them.
 
+Without it, starting the first watcher for a signal unblocks that signal
+in the calling thread, so that it can be received. qev: with it, libev
+never calls C<sigprocmask> - not to unblock a signal when its first watcher
+starts (until qev 5.1 the test was inverted, as in libev 4.33: the flag
+unblocked, the default did not), and not around C<EVFLAG_SIGNALFD> either.
+A signalfd only receives signals that are blocked, so with both flags the
+caller keeps them blocked itself, as in the "signal receiver thread" setup
+described under L</The special problem of threads signal handling>.
+
 This behaviour is useful when you want to do your own signal handling, or
 want to handle signals only in specific threads and want to avoid libev
 unblocking the signals.
@@ -956,7 +965,11 @@ sample ahead of the wall clock fires a timer at once and a sample behind it
 delays one; a sample older than the loop's time is ignored, the loop's clock
 never stepping back; a pass that blocks always re-reads, since it slept. The
 realtime clock (C<ev_now>) follows the sample the way the loop's own update
-derives it. Call it right before the pass it is meant for: a supply that
+derives it: by the cached offset, and every half C<MIN_TIMEJUMP> by a real
+read of the wall clock, which recomputes the C<ev_periodic> deadlines only
+when it shows the wall clock jumped - as the loop's own update does, so a
+periodic that fell due in between still fires on the pass. Call it right
+before the pass it is meant for: a supply that
 outlives its pass makes a later pass judge timers against an old time.
 Without a monotonic clock there is nothing to supply, and the call is a
 plain C<ev_now_update>.
@@ -3811,7 +3824,10 @@ event loop.
 C<ev_async_send> sets a flag in the watcher and wakes up the loop. When
 the loop iterates next and checks for the watcher to have become active,
 it will reset the flag again. C<ev_async_pending> can be used to very
-quickly check whether invoking the loop might be a good idea.
+quickly check whether invoking the loop might be a good idea. qev: the
+check is an acquire load (on GCC and clang, unless C<EV_NO_ATOMIC_BUILTINS>
+is defined), the counterpart of the release store C<ev_async_send> makes,
+so the owner may make it while another thread sends.
 
 Not that this does I<not> check whether the watcher itself is pending,
 only whether it has been requested to make this watcher pending: there
@@ -3849,6 +3865,11 @@ C<EV_ERROR>, C<EV_READ>, C<EV_WRITE> or C<EV_TIMER>) and the C<arg>
 value passed to C<ev_once>. Note that it is possible to receive I<both>
 a timeout and an io event at the same time - you probably should give io
 events precedence.
+
+qev: the watchers and their bookkeeping live in a private allocation that
+the callback's invocation frees. A loop destroyed before that happens - the
+timeout still ahead, or the event queued but not yet invoked - frees it in
+C<ev_loop_destroy>, and does I<not> call the callback.
 
 Example: wait up to ten seconds for data to appear on STDIN_FILENO.
 

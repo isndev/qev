@@ -30,6 +30,7 @@
 # include <signal.h>
 # include <sys/socket.h>
 # include <sys/stat.h>
+# include <time.h>
 # include <unistd.h>
 #endif
 
@@ -157,6 +158,60 @@ static void test_cleanup(void) {
 /* ---- ev_once ---- */
 static int once_hit;
 static void once_cb(int revents, void *arg) { (void)revents; *(int *)arg = 1; }
+
+/* What ev_once allocates is private: the caller gets no handle on it and only its callback frees
+   it. So a loop destroyed first -- its timeout still in the future, or its callback pending but not
+   yet invoked -- must free it itself, and must not call the callback (Huly QB-736). The witness is
+   the library's own allocator: ev_set_allocator with one that counts live blocks, read across a
+   loop's whole life, so the loop's own arrays balance to zero and only what it forgot remains. */
+static long once_live; /* blocks handed out minus blocks freed through the counting allocator */
+static void *once_count_alloc(void *ptr, long size) EV_NOEXCEPT {
+  if (size > 0) {
+    void *p = realloc(ptr, (size_t) size);
+    if (p && !ptr) ++once_live;
+    return p;
+  }
+  if (ptr) { --once_live; free(ptr); }
+  return 0;
+}
+static void once_hold_pending(struct ev_loop *l) { (void)l; } /* an invoke callback that invokes nothing */
+static long once_destroyed_balance(int shape, int *hit) {
+  long before = once_live;
+  struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+  *hit = 0;
+  switch (shape) {
+  case 1: /* a timeout far in the future: the timer is in the heap at destruction */
+    ev_once(l, -1, 0, 100.0, once_cb, hit);
+    break;
+  case 2: /* due and fed, but never invoked: the timer has left the heap, the event waits in the pending queue */
+    ev_set_invoke_pending_cb(l, once_hold_pending);
+    ev_once(l, -1, 0, 0.0, once_cb, hit);
+    { ev_tstamp t0 = ev_time(); while (ev_pending_count(l) == 0 && ev_time() - t0 < 2.0) ev_run(l, EVRUN_NOWAIT); }
+    break;
+  case 3: /* delivered: once_cb freed it, as it always did */
+    ev_once(l, -1, 0, 0.0, once_cb, hit);
+    { ev_tstamp t0 = ev_time(); while (!*hit && ev_time() - t0 < 2.0) ev_run(l, EVRUN_NOWAIT); }
+    break;
+#ifndef _WIN32
+  case 4: /* an fd that never becomes ready AND a timeout: both halves are armed */
+  case 5: /* the fd alone (no timeout): the watcher is only on the fd's list */
+    {
+      int sv[2];
+      if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) { ev_loop_destroy(l); *hit = -1; return 0; }
+      ev_once(l, sv[0], EV_READ, shape == 4 ? 100.0 : -1.0, once_cb, hit);
+      ev_run(l, EVRUN_NOWAIT); /* registered with the backend, nothing to read */
+      ev_loop_destroy(l);
+      close(sv[0]); close(sv[1]);
+      return once_live - before;
+    }
+#endif
+  default: /* shape 0: an empty loop, the allocator's own control */
+    break;
+  }
+  ev_loop_destroy(l);
+  return once_live - before;
+}
+
 static void test_once(void) {
   once_hit = 0;
   struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
@@ -165,6 +220,28 @@ static void test_once(void) {
   ev_run(l, 0);
   OK(once_hit, "ev_once");
   ev_loop_destroy(l);
+
+  {
+    int  hit;
+    long balance;
+    ev_set_allocator(once_count_alloc); /* forwards to realloc/free: harmless to the cases after this one */
+    balance = once_destroyed_balance(0, &hit);
+    OK(balance == 0, "control: an empty loop created and destroyed through a counting allocator leaves nothing behind");
+    balance = once_destroyed_balance(1, &hit);
+    OK(balance == 0 && hit == 0, "ev_once with a timeout still in the future, then the loop destroyed: its private allocation is freed, its callback not called (QB-736)");
+    balance = once_destroyed_balance(2, &hit);
+    OK(balance == 0 && hit == 0, "ev_once fed but never invoked, then the loop destroyed: freed from the pending queue, callback not called (QB-736)");
+    balance = once_destroyed_balance(3, &hit);
+    OK(balance == 0 && hit == 1, "control: an ev_once that fired freed itself, and the loop's teardown frees nothing twice");
+#ifndef _WIN32
+    balance = once_destroyed_balance(4, &hit);
+    if (hit < 0) SKIP("ev_once on an idle fd with a timeout, then the loop destroyed", "socketpair");
+    else OK(balance == 0 && hit == 0, "ev_once on an idle fd with a timeout, then the loop destroyed: freed once, though both halves were armed (QB-736)");
+    balance = once_destroyed_balance(5, &hit);
+    if (hit < 0) SKIP("ev_once on an idle fd alone, then the loop destroyed", "socketpair");
+    else OK(balance == 0 && hit == 0, "ev_once on an idle fd alone, then the loop destroyed: freed from the fd's watcher list (QB-736)");
+#endif
+  }
 }
 
 #ifndef _WIN32
@@ -199,6 +276,62 @@ static void test_signal(void) {
   ev_run(l, 0);
   OK(sig_hit, "signal");
   ev_loop_destroy(l);
+}
+
+/* ---- the signal mask and EVFLAG_NOSIGMASK (QB-713) ----
+   The manual's contract: with EVFLAG_NOSIGMASK libev "will avoid to modify the signal mask" -- the
+   caller keeps the signals it handles itself (a sigwait thread feeding ev_feed_signal) blocked --
+   and without it, starting a watcher unblocks its signal so that it can be received at all. The
+   code had the test inverted (upstream libev's too, reversed in its CVS since: "the behaviour of
+   EV_NOSIGMASK was reversed"): the flag unblocked, the default did not. Each case blocks SIGUSR2,
+   starts a watcher and reads the mask; signalfd, which needs its signals blocked and unblocked
+   them again at the stop, honours the flag there too. The caller's mask is restored at the end. */
+static int sig_blocked(int signum) { sigset_t cur; sigprocmask(SIG_BLOCK, NULL, &cur); return sigismember(&cur, signum); }
+static int sigmask_hits;
+static void sigmask_cb(struct ev_loop *l, ev_signal *w, int r) { (void)l; (void)w; (void)r; ++sigmask_hits; }
+static void test_signal_mask(void) {
+  sigset_t orig, usr2;
+  sigemptyset(&usr2); sigaddset(&usr2, SIGUSR2);
+  sigprocmask(SIG_BLOCK, &usr2, &orig);
+  {
+    struct ev_loop *l = ev_loop_new(EVFLAG_NOSIGMASK);
+    ev_signal sw; ev_signal_init(&sw, sigmask_cb, SIGUSR2); ev_signal_start(l, &sw);
+    int after_start = sig_blocked(SIGUSR2);
+    ev_signal_stop(l, &sw);
+    OK(after_start && sig_blocked(SIGUSR2), "EVFLAG_NOSIGMASK: a signal the caller blocked stays blocked across ev_signal_start and ev_signal_stop (QB-713)");
+    ev_loop_destroy(l);
+  }
+  sigprocmask(SIG_BLOCK, &usr2, NULL);
+  {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_signal sw; ev_signal_init(&sw, sigmask_cb, SIGUSR2); ev_signal_start(l, &sw);
+    OK(!sig_blocked(SIGUSR2), "without EVFLAG_NOSIGMASK, ev_signal_start unblocks the signal it watches so that it can arrive -- the documented default (QB-713)");
+    ev_signal_stop(l, &sw);
+    ev_loop_destroy(l);
+  }
+  sigprocmask(SIG_BLOCK, &usr2, NULL);
+#ifdef __linux__
+  {
+    struct ev_loop *l = ev_loop_new(EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK);
+    ev_signal sw; ev_signal_init(&sw, sigmask_cb, SIGUSR2); ev_signal_start(l, &sw);
+    int via_sigfd = ev_io_count(l) == 1; /* the signalfd is an ev_io; the handler path's evpipe is not counted */
+    sigmask_hits = 0;
+    if (via_sigfd) {
+      raise(SIGUSR2);                    /* blocked by the caller: queued for the signalfd */
+      ev_run(l, EVRUN_NOWAIT);
+      OK(sigmask_hits == 1, "EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK over a signal the caller blocked: delivered through the signalfd");
+    } else
+      SKIP("EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK delivery", "signalfd not in use in this build");
+    ev_signal_stop(l, &sw);
+    OK(sig_blocked(SIGUSR2), "EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK: stopping the watcher leaves the caller's block in place (QB-713)");
+    {                                    /* never leave a SIGUSR2 pending behind the restored mask */
+      struct timespec zero = {0, 0};
+      while (sigtimedwait(&usr2, NULL, &zero) == SIGUSR2) {}
+    }
+    ev_loop_destroy(l);
+  }
+#endif
+  sigprocmask(SIG_SETMASK, &orig, NULL);
 }
 
 /* ---- child ---- */
@@ -291,6 +424,7 @@ int main(void) {
 #ifndef _WIN32
   test_io();
   test_signal();
+  test_signal_mask();
   test_child();
   test_stat();
   test_embed();
@@ -302,13 +436,14 @@ int main(void) {
 
   /* A suite that skipped everything exits 0 and reads as a pass, which is how a build with the
      watcher families compiled out would have reported itself once the families became
-     conditional above. Four checks are unconditional in EVERY combination -- timer, periodic,
-     cleanup and once are in no reduced profile and need nothing POSIX-only -- so four is the
-     floor. It is deliberately the minimum over all of them rather than the count this platform
-     happens to reach: measured, a full POSIX build runs 14, a reduced POSIX build 7, and a
-     reduced Windows build exactly these 4. */
-  if (g_run < 4) {
-    printf("== FAIL: only %d checks ran; timer, periodic, cleanup and once are unconditional ==\n",
+     conditional above. Eight checks are unconditional in EVERY combination -- timer, periodic,
+     cleanup and once (with its four teardown cases, QB-736) are in no reduced profile and need
+     nothing POSIX-only -- so eight is the floor. It is deliberately the minimum over all of them
+     rather than the count this platform happens to reach: a reduced Windows build runs exactly
+     these 8; POSIX adds the io, signal, signal-mask, child, stat and embed cases and the two fd
+     shapes of the once teardown. */
+  if (g_run < 8) {
+    printf("== FAIL: only %d checks ran; timer, periodic, cleanup and the five once checks are unconditional ==\n",
            g_run);
     return 1;
   }

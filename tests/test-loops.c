@@ -8,7 +8,9 @@
  * around them behaves: multi-loop isolation, timer ordering and repeat drift,
  * priorities, the README's "NULL if unavailable" backend promise, ev_now
  * bookkeeping, manual event feeding, a real fork(), an ev_async_send from a
- * second thread, and a thousand concurrent timers. Same harness discipline as
+ * second thread, a thousand concurrent timers, and on Linux the io_uring and aio
+ * backends' own contracts (descriptor 0, a loop handed between threads, every
+ * allocation returned at teardown). Same harness discipline as
  * test-watchers.c: every loop is driven under a watchdog so a hang is a
  * failure, families the build profile removed SKIP instead of failing to
  * compile, and the suite refuses to report success when fewer than its
@@ -35,6 +37,11 @@ static void msleep(int ms) { Sleep((DWORD) ms); }
 #if defined(__linux__) && EV_USE_EPOLL_PWAIT2
 # include <errno.h>
 # include <sys/epoll.h>
+#endif
+#if defined(__linux__) && EV_USE_LINUXAIO
+# include <linux/aio_abi.h>
+# include <sys/resource.h>
+# include <sys/syscall.h>
 #endif
 
 static int g_fail = 0, g_run = 0, g_skip = 0;
@@ -900,6 +907,318 @@ static void test_epoll_ns_wait(void) {
     SKIP(name, "epoll_pwait2 not declared by this libc (glibc < 2.35)");
 #endif
 }
+
+/* ---- io_uring: descriptor 0 is watched like any other (QB-336) ----
+   The backend tags each POLL_ADD fd | generation << 32, and the first registration of descriptor 0
+   carries generation 0 -- the tag 0, which the completion drain discarded as if it were a sentinel,
+   before delivering the readiness or re-arming the one-shot poll: a watcher on fd 0 (stdin, or the
+   first socket of a daemon that closed it) never fired. Descriptor 0 becomes a pipe's read end
+   BEFORE the loop is created, so neither the ring nor its timerfd can take the number, and the
+   watcher is driven twice: the second event needs the re-arm the first completion schedules. The
+   control: stopped, the watcher reports nothing (its poll removed, the cancelled completion of the
+   old generation ignored); restarted -- generation 1, a nonzero tag -- it reports the byte that
+   arrived meanwhile. */
+static int fd0_hits;
+static void fd0_cb(struct ev_loop *l, ev_io *w, int r) {
+    char c;
+    if ((r & EV_READ) && read(w->fd, &c, 1) == 1) ++fd0_hits;
+    ev_break(l, EVBREAK_ALL);
+}
+static void test_iouring_fd_zero(void) {
+    const char *name = "io_uring: a watcher on descriptor 0 fires, and fires again after its one-shot re-arm (tag 0 is not a sentinel -- QB-336)";
+    const char *ctl  = "io_uring: control -- stopped, the fd 0 watcher is silent; restarted (generation 1) it reports the byte that came meanwhile";
+    struct ev_loop *l; ev_io w; ev_timer wd; int fds[2], saved, i, first = 0, silent = 0;
+    if (!(ev_supported_backends() & EVBACKEND_IOURING)) { SKIP(name, "io_uring not compiled in"); SKIP(ctl, "io_uring not compiled in"); return; }
+    saved = dup(0);                      /* -1 when the harness closed stdin: restored as closed */
+    if (pipe(fds) != 0) { if (saved >= 0) close(saved); SKIP(name, "pipe() failed"); SKIP(ctl, "pipe() failed"); return; }
+    if (fds[0] != 0) {
+        if (dup2(fds[0], 0) != 0) {
+            close(fds[0]); close(fds[1]); if (saved >= 0) close(saved);
+            SKIP(name, "dup2 onto descriptor 0 failed"); SKIP(ctl, "dup2 onto descriptor 0 failed"); return;
+        }
+        close(fds[0]);
+    }
+    l = ev_loop_new(EVBACKEND_IOURING);
+    if (l) {
+        fd0_hits = 0;
+        ev_io_init(&w, fd0_cb, 0, EV_READ); ev_io_start(l, &w);
+        ev_timer_init(&wd, wd_cb, 2.0, 0.0);
+        for (i = 0; i < 2; ++i) {
+            ev_timer_set(&wd, 2.0, 0.0); ev_timer_start(l, &wd);
+            if (write(fds[1], "x", 1) == 1) ev_run(l, 0);
+            ev_timer_stop(l, &wd);
+        }
+        first = fd0_hits;
+        ev_io_stop(l, &w);
+        if (write(fds[1], "x", 1) == 1)
+            for (i = 0; i < 4; ++i) ev_run(l, EVRUN_NOWAIT);
+        silent = fd0_hits == first;
+        ev_io_start(l, &w);
+        ev_timer_set(&wd, 2.0, 0.0); ev_timer_start(l, &wd);
+        ev_run(l, 0);
+        ev_timer_stop(l, &wd);
+        ev_io_stop(l, &w);
+        ev_loop_destroy(l);
+    }
+    close(fds[1]);
+    if (saved >= 0) { dup2(saved, 0); close(saved); } else close(0);
+    if (!l) { SKIP(name, "io_uring unavailable at runtime"); SKIP(ctl, "io_uring unavailable at runtime"); return; }
+    OK(first == 2, name);
+    OK(silent && fd0_hits == first + 1, ctl);
+}
+
+/* ---- io_uring: one loop handed from thread to thread, never concurrently (QB-744) ----
+   docs/ev.pod (THREADS) lets calls on one loop come from different threads as long as they never
+   overlap -- the leader/follower model hands a loop around. The ring was created
+   IORING_SETUP_SINGLE_ISSUER, which binds submission to the creating thread: the first SQE another
+   thread submitted came back EEXIST and went to ev_syserr, abort by default. And a poll outlives the
+   thread that submitted it only until it fires: the kernel then completes it -ECANCELED, which the
+   drain dropped without re-arming, so the watcher went silent for good. The loop is created and
+   armed on this thread, handed to a second one -- which completes this thread's poll, registers a
+   watcher and re-arms it -- and handed back once the second thread has exited with its poll armed.
+   A syserr callback counts instead of aborting, so the defect fails the case rather than the
+   process; the mask names the rounds that timed out. */
+static int  ho_hits, ho_syserr, ho_round_no, ho_missed;   /* ho_missed: bit k set = round k timed out */
+static void ho_syserr_cb(const char *msg) { (void)msg; ++ho_syserr; }
+static void ho_cb(struct ev_loop *l, ev_io *w, int r) {
+    char c;
+    if ((r & EV_READ) && read(w->fd, &c, 1) == 1) ++ho_hits;
+    ev_break(l, EVBREAK_ALL);
+}
+struct ho_ctx { struct ev_loop *l; ev_io *w2; ev_timer *wd; int p1[2], p2[2]; };
+static void ho_round(struct ev_loop *l, ev_timer *wd, int wfd) {
+    int before = ho_hits;
+    ev_timer_set(wd, 2.0, 0.0); ev_timer_start(l, wd);
+    if (write(wfd, "x", 1) == 1) ev_run(l, 0);
+    ev_timer_stop(l, wd);
+    if (ho_hits == before) ho_missed |= 1 << ho_round_no;
+    ++ho_round_no;
+}
+static void *ho_thread(void *arg) {
+    struct ho_ctx *c = (struct ho_ctx *) arg;
+    ho_round(c->l, c->wd, c->p1[1]);     /* a poll the first thread armed, completed while it sleeps in pthread_join */
+    ev_io_start(c->l, c->w2);
+    ho_round(c->l, c->wd, c->p2[1]);     /* a registration submitted from this thread */
+    ho_round(c->l, c->wd, c->p2[1]);     /* its re-arm, from this thread */
+    ev_run(c->l, EVRUN_NOWAIT);          /* hand over with this thread's re-arms submitted, then exit */
+    return NULL;
+}
+static void test_iouring_thread_handoff(void) {
+    const char *name = "io_uring: a loop handed between threads one at a time keeps delivering, with no syserr (no SINGLE_ISSUER binding -- QB-744)";
+    struct ho_ctx c; ev_io w1, w2; ev_timer wd; pthread_t th; int started;
+    if (!(ev_supported_backends() & EVBACKEND_IOURING)) { SKIP(name, "io_uring not compiled in"); return; }
+    if (pipe(c.p1) != 0) { SKIP(name, "pipe() failed"); return; }
+    if (pipe(c.p2) != 0) { close(c.p1[0]); close(c.p1[1]); SKIP(name, "pipe() failed"); return; }
+    c.l = ev_loop_new(EVBACKEND_IOURING);
+    if (!c.l) {
+        close(c.p1[0]); close(c.p1[1]); close(c.p2[0]); close(c.p2[1]);
+        SKIP(name, "io_uring unavailable at runtime"); return;
+    }
+    c.w2 = &w2; c.wd = &wd;
+    ev_io_init(&w2, ho_cb, c.p2[0], EV_READ);   /* started by the second thread: its own registration */
+    ho_hits = ho_syserr = ho_round_no = ho_missed = 0;
+    ev_set_syserr_cb(ho_syserr_cb);
+    ev_timer_init(&wd, wd_cb, 2.0, 0.0);
+    ev_io_init(&w1, ho_cb, c.p1[0], EV_READ); ev_io_start(c.l, &w1);
+    ho_round(c.l, &wd, c.p1[1]);         /* created and registered on this thread */
+    ev_run(c.l, EVRUN_NOWAIT);           /* hand over with this thread's re-arm submitted */
+    started = pthread_create(&th, NULL, ho_thread, &c) == 0;
+    if (started) {
+        pthread_join(th, NULL);
+        ho_round(c.l, &wd, c.p2[1]);     /* back here: a poll the second thread armed before it exited */
+        ho_round(c.l, &wd, c.p1[1]);
+    }
+    ev_set_syserr_cb(0);                 /* the default: perror + abort */
+    ev_io_stop(c.l, &w1); ev_io_stop(c.l, &w2);
+    ev_loop_destroy(c.l);
+    close(c.p1[0]); close(c.p1[1]); close(c.p2[0]); close(c.p2[1]);
+    if (!started) { SKIP(name, "pthread_create failed"); return; }
+    printf("        %d of 6 hand-off rounds delivered (rounds missed: mask 0x%x), %d syserr\n", ho_hits, (unsigned) ho_missed, ho_syserr);
+    OK(ho_hits == 6 && ho_syserr == 0, name);
+}
+
+#if EV_USE_LINUXAIO
+/* ---- linux aio: the loop returns every allocation it made (QB-338) ----
+   The backend grows two pointer arrays of its own (the per-fd iocb table and the submission batch);
+   its teardown freed the iocbs the table points to but neither array, and the fallback to epoll --
+   taken when the aio context cannot be regrown -- dropped them as well, after which no destroy ever
+   looked at them again. The witness is libev's own allocator hook: a pass-through to realloc/free
+   that counts live blocks, installed once and left in place (there is no way back to the built-in
+   one, and this one behaves exactly like it). Each case must end with the count it began with. */
+static long qa_live;
+static int  qa_installed;
+static void *qa_alloc(void *ptr, long size) {
+    if (size > 0) {
+        void *p = realloc(ptr, (size_t) size);
+        if (p && !ptr) __atomic_add_fetch(&qa_live, 1, __ATOMIC_RELAXED);
+        return p;
+    }
+    if (size == 0 && ptr) { __atomic_sub_fetch(&qa_live, 1, __ATOMIC_RELAXED); free(ptr); }
+    return 0;
+}
+static long qa_now(void) {
+    if (!qa_installed) { ev_set_allocator(qa_alloc); qa_installed = 1; }
+    return __atomic_load_n(&qa_live, __ATOMIC_RELAXED);
+}
+static int la_hits;
+static void la_cb(struct ev_loop *l, ev_io *w, int r) { (void)l; (void)w; if (r & EV_READ) ++la_hits; }
+static long la_proc(const char *path) {
+    long v = -1; FILE *f = fopen(path, "r");
+    if (f) { if (fscanf(f, "%ld", &v) != 1) v = -1; fclose(f); }
+    return v;
+}
+/* The capacity the kernel gives the backend's first context (io_setup of 15 requests; the kernel
+   scales it by the CPU count): one more fd than this in flight cannot fit and forces the regrow. */
+static int la_first_ring_capacity(void) {
+    aio_context_t ctx = 0; int nr;
+    if (syscall(SYS_io_setup, 15, &ctx) != 0) return -1;
+    nr = (int) ((const unsigned *) (uintptr_t) ctx)[1];   /* struct aio_ring { id, nr, ... } */
+    syscall(SYS_io_destroy, ctx);
+    return nr;
+}
+/* n duplicates of one pipe read end, each with its own watcher: one byte makes all of them ready. */
+static int la_watch(struct ev_loop *l, ev_io *ws, int *dups, int from, int to, int rfd) {
+    int i;
+    for (i = from; i < to; ++i) {
+        if ((dups[i] = dup(rfd)) < 0) return i;
+        ev_io_init(&ws[i], la_cb, dups[i], EV_READ); ev_io_start(l, &ws[i]);
+    }
+    return to;
+}
+static void la_unwatch(struct ev_loop *l, ev_io *ws, int *dups, int n) {
+    int i;
+    for (i = 0; i < n; ++i) { ev_io_stop(l, &ws[i]); close(dups[i]); }
+}
+/* Passes until every watcher reported (each pass re-arms all of them: the byte stays in the pipe). */
+static int la_pump(struct ev_loop *l, int n) {
+    int pass;
+    for (pass = 0; pass < 64; ++pass) {
+        la_hits = 0;
+        ev_run(l, EVRUN_NOWAIT);
+        if (la_hits >= n) return 1;
+    }
+    return 0;
+}
+static void test_linuxaio_lifecycle(void) {
+    const char *name = "linux aio: three create / deliver / destroy cycles end with every allocation returned (QB-338)";
+    long before; int cycle, delivered = 1, fds[2];
+    if (!(ev_supported_backends() & EVBACKEND_LINUXAIO)) { SKIP(name, "linux aio not available on this kernel"); return; }
+    if (pipe(fds) != 0) { SKIP(name, "pipe() failed"); return; }
+    before = qa_now();
+    for (cycle = 0; cycle < 3; ++cycle) {
+        struct ev_loop *l = ev_loop_new(EVBACKEND_LINUXAIO);
+        ev_io w; int dup0;
+        if (!l || ev_backend(l) != EVBACKEND_LINUXAIO) {
+            if (l) ev_loop_destroy(l);
+            close(fds[0]); close(fds[1]);
+            SKIP(name, "linux aio unavailable at runtime (io_setup refused)"); return;
+        }
+        if (write(fds[1], "x", 1) != 1) delivered = 0;
+        if (la_watch(l, &w, &dup0, 0, 1, fds[0]) != 1) delivered = 0;
+        else {
+            delivered = delivered && la_pump(l, 1);
+            la_unwatch(l, &w, &dup0, 1);
+        }
+        { char c; if (read(fds[0], &c, 1) != 1) delivered = 0; }
+        ev_loop_destroy(l);
+    }
+    close(fds[0]); close(fds[1]);
+    printf("        %ld block(s) still live after three linux aio loops were destroyed\n", qa_now() - before);
+    OK(delivered && qa_now() == before, name);
+}
+/* More fds in flight than the first context holds: io_submit answers EAGAIN, the backend destroys
+   the context and sets up a larger one (the arrays are KEPT -- they are about to be reused), and
+   every watcher still reports, from the aio backend. */
+static void test_linuxaio_regrow(void) {
+    const char *name = "linux aio: more fds than the first context holds regrow it in place -- every watcher reports, still on aio, and teardown returns every allocation (QB-338)";
+    long before; int cap, n, got, fds[2], delivered, still_aio; struct ev_loop *l;
+    static ev_io ws[4096]; static int dups[4096]; struct rlimit rl;
+    if (!(ev_supported_backends() & EVBACKEND_LINUXAIO)) { SKIP(name, "linux aio not available on this kernel"); return; }
+    cap = la_first_ring_capacity();
+    if (cap <= 0) { SKIP(name, "io_setup refused"); return; }
+    n = cap + 16;
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || (rlim_t) n + 64 > rl.rlim_cur || n > 4096) {
+        SKIP(name, "not enough descriptors to overflow the first aio context"); return;
+    }
+    if (pipe(fds) != 0) { SKIP(name, "pipe() failed"); return; }
+    before = qa_now();
+    l = ev_loop_new(EVBACKEND_LINUXAIO);
+    if (!l || ev_backend(l) != EVBACKEND_LINUXAIO) {
+        if (l) ev_loop_destroy(l);
+        close(fds[0]); close(fds[1]);
+        SKIP(name, "linux aio unavailable at runtime (io_setup refused)"); return;
+    }
+    got = la_watch(l, ws, dups, 0, n, fds[0]);
+    delivered = got == n && write(fds[1], "x", 1) == 1 && la_pump(l, n);
+    still_aio = ev_backend(l) == EVBACKEND_LINUXAIO;
+    la_unwatch(l, ws, dups, got);
+    ev_loop_destroy(l);
+    close(fds[0]); close(fds[1]);
+    printf("        first context holds %d, %d fds in flight: all reported=%d, backend still aio=%d, %ld block(s) live after destroy\n",
+           cap, n, delivered, still_aio, qa_now() - before);
+    OK(delivered && still_aio && qa_now() == before, name);
+}
+/* The same overflow with the system-wide aio quota taken (/proc/sys/fs/aio-max-nr): the larger
+   context cannot be set up, so the backend falls back to epoll for good. It must keep delivering,
+   and its teardown -- epoll's, now -- must still return the aio arrays. The quota is held only for
+   the passes that trigger the fallback and released at once. */
+static void test_linuxaio_fallback(void) {
+    const char *name = "linux aio: when the context cannot be regrown the loop falls back to epoll, keeps delivering, and teardown returns every allocation (QB-338)";
+    long before, max_nr, used, spare; int cap, n, got, fds[2], delivered, fell_back; struct ev_loop *l;
+    aio_context_t hog = 0;
+    static ev_io ws[4096]; static int dups[4096]; struct rlimit rl;
+    if (!(ev_supported_backends() & EVBACKEND_LINUXAIO)) { SKIP(name, "linux aio not available on this kernel"); return; }
+    cap = la_first_ring_capacity();
+    if (cap <= 0) { SKIP(name, "io_setup refused"); return; }
+    n = cap + 16;
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || (rlim_t) n + 64 > rl.rlim_cur || n > 4096) {
+        SKIP(name, "not enough descriptors to overflow the first aio context"); return;
+    }
+    if (pipe(fds) != 0) { SKIP(name, "pipe() failed"); return; }
+    before = qa_now();
+    l = ev_loop_new(EVBACKEND_LINUXAIO);
+    if (!l || ev_backend(l) != EVBACKEND_LINUXAIO) {
+        if (l) ev_loop_destroy(l);
+        close(fds[0]); close(fds[1]);
+        SKIP(name, "linux aio unavailable at runtime (io_setup refused)"); return;
+    }
+    got = la_watch(l, ws, dups, 0, n, fds[0]);
+    max_nr = la_proc("/proc/sys/fs/aio-max-nr");
+    used   = la_proc("/proc/sys/fs/aio-nr");
+    spare  = max_nr - used;
+    fell_back = 0; delivered = 0;
+    if (got == n && max_nr > 0 && used >= 0 && spare > 0 && spare <= (1L << 18)
+        && syscall(SYS_io_setup, (unsigned) spare, &hog) == 0) {
+        /* The regrow frees the loop's 15 requests and asks for 30: it must not fit. Another
+           process that released aio contexts meanwhile would let it, which is a SKIP, not a FAIL. */
+        if (max_nr - la_proc("/proc/sys/fs/aio-nr") >= 15) {
+            syscall(SYS_io_destroy, hog);
+            la_unwatch(l, ws, dups, got);
+            ev_loop_destroy(l);
+            close(fds[0]); close(fds[1]);
+            SKIP(name, "the system aio quota moved under the test"); return;
+        }
+        if (write(fds[1], "x", 1) == 1) {
+            int pass;
+            for (pass = 0; pass < 8 && ev_backend(l) == EVBACKEND_LINUXAIO; ++pass) ev_run(l, EVRUN_NOWAIT);
+        }
+        syscall(SYS_io_destroy, hog);
+        fell_back = ev_backend(l) == EVBACKEND_EPOLL;
+        delivered = fell_back && la_pump(l, n);
+    } else {
+        la_unwatch(l, ws, dups, got);
+        ev_loop_destroy(l);
+        close(fds[0]); close(fds[1]);
+        SKIP(name, "the aio quota could not be taken (aio-max-nr too large, or raced)"); return;
+    }
+    la_unwatch(l, ws, dups, got);
+    ev_loop_destroy(l);
+    close(fds[0]); close(fds[1]);
+    printf("        %d fds, quota taken: fell back to epoll=%d, all reported after=%d, %ld block(s) live after destroy\n",
+           n, fell_back, delivered, qa_now() - before);
+    OK(fell_back && delivered && qa_now() == before, name);
+}
+#endif
 #endif
 
 /* ---- the loop's clock: sub-millisecond, and it never steps back (QB-193) ---- */
@@ -1002,6 +1321,15 @@ int main(void) {
     test_iouring_quiet_nowait();
     test_iouring_blocking_timer();
     test_epoll_ns_wait();
+    test_iouring_fd_zero();
+    test_iouring_thread_handoff();
+# if EV_USE_LINUXAIO
+    test_linuxaio_lifecycle();
+    test_linuxaio_regrow();
+    test_linuxaio_fallback();
+# else
+    SKIP("linux aio: lifecycle, regrow and fallback return every allocation (QB-338)", "EV_USE_LINUXAIO is 0 in this build (QB_EV_USE_LINUXAIO=OFF)");
+# endif
 #endif
     test_real_fork();
 
@@ -1010,7 +1338,8 @@ int main(void) {
     /* Forty-eight checks are unconditional in every profile on every platform (only the
        cross-thread async cases, the fork case, the signal half of the NOWAIT cases, the pipe
        halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
-       async watchers and the nanosecond epoll wait on a libc or kernel without epoll_pwait2
+       async watchers, the nanosecond epoll wait on a libc or kernel without epoll_pwait2 and
+       the Linux backend cases where the build or the kernel lacks io_uring or aio
        can legitimately skip, and the backend probe skips only where every backend exists,
        which no platform has). A run below that floor measured nothing and must not read as a
        pass. */

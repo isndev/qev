@@ -8,6 +8,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **C++ wrapper: three members that never compiled or never did their job (Huly QB-312, QB-313,
+  QB-711).** The wrapper is templates, and a member nothing instantiates is never compiled:
+  `w (revents)` passed the watcher where the callback takes the loop and did not compile as soon
+  as it was used (QB-312) -- it now invokes the callback as `ev_invoke` would, with the watcher's
+  loop, the watcher and `revents`; `ev::embed::start (loop)` resolved to the base's `set (loop)`,
+  moving the watcher to the loop it was meant to embed and leaving that loop unset (QB-313) -- it
+  calls `set_embed` and the watcher stays on its own loop; and under `EV_MULTIPLICITY=0`, the
+  single-loop embedding profile `docs/ev.pod` says the wrapper supports, the three callback
+  thunks named a `loop` parameter that profile does not have, so `ev++.h` did not compile at all
+  (QB-711), and `loop_ref`'s comparisons left a parameter unused. `tests/test-cxx.cpp`
+  instantiates and drives every callback form, calls each directly, checks the loop a direct call
+  passes on two loops, and embeds a loop with `start (loop)` across a stop and a second start; the
+  matrix builds it against the library and in the single-loop profile (`ev.c` compiled in under
+  `EV_MULTIPLICITY=0`), warning-free with `-Wall -Wextra` under gcc and clang. `docs/ev.pod`
+  documents the direct call and what `start (loop)` does for `ev::embed`.
 - **io_uring: a watcher on descriptor 0 fires (Huly QB-336).** Each poll is tagged
   `fd | generation << 32`, and the first registration of descriptor 0 is the tag 0, which the
   completion drain skipped as if it were a sentinel: the readiness was dropped and the one-shot

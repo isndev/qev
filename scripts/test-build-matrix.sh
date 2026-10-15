@@ -7,7 +7,8 @@
 #
 # Exercises: CMake static + shared, autotools ./configure && make (libtool static
 # + shared), find_package(qev) consumer (static & shared), ASan/UBSan smoke,
-# per-backend runtime probe, and the C++ (ev++.h) wrapper.
+# per-backend runtime probe, and the C++ (ev++.h) wrapper suite against the library and in the
+# single-loop (EV_MULTIPLICITY=0) embedding profile.
 #
 # Emits "RESULT|<cell>|<PASS|FAIL|SKIP>|<detail>" lines and a final summary.
 # Exits 0 by default (the caller tallies RESULT lines). Set STRICT=1 to exit
@@ -307,6 +308,28 @@ else res per-backend-smoke FAIL "link: $(tail -2 be-link.log|tr '\n' ' ')"; fi
 if $CXX smoke.cpp -Ib-static/include -Ib-static b-static/libqev.a -lm -o smoke_cxx >cxx-link.log 2>&1 && ./smoke_cxx >cxx-run.log 2>&1; then
   res cxx-qevpp-drive PASS "$(tail -1 cxx-run.log)"
 else res cxx-qevpp-drive FAIL "$(tail -2 cxx-link.log cxx-run.log 2>/dev/null|tr '\n' ' ')"; fi
+
+# ---- cells: the whole wrapper, in both of its profiles --------------------
+# The wrapper is templates, and a member nothing instantiates is never compiled: a direct call
+# `w (revents)` that did not compile (QB-312), an `ev::embed::start (loop)` that moved the watcher
+# to the loop it was meant to embed (QB-313) and a header that did not compile at all under
+# EV_MULTIPLICITY=0 (QB-711) all lived for that reason. tests/test-cxx.cpp instantiates every
+# callback form and drives it; it is built against the library, then in the single-loop
+# embedding profile docs/ev.pod promises -- ev.c compiled in under EV_MULTIPLICITY=0 -- and must
+# compile without a warning in both, since the thunks exist partly to silence one.
+cxx_suite() { # <cell> <compile log> <binary>
+  local W; W=$(grep -c 'warning:' "$2")
+  if [ "$W" != 0 ]; then res "$1" FAIL "$W warnings: $(grep -m1 'warning:' "$2")"
+  elif "./$3" >"$3.log" 2>&1; then res "$1" PASS "$(grep '== cxx' "$3.log" | tr -d '=' | sed 's/^ *//;s/ *$//')"
+  else res "$1" FAIL "$(grep -E 'FAIL|== cxx' "$3.log" | head -3 | tr '\n' ' ')"; fi
+}
+if $CXX -Wall -Wextra tests/test-cxx.cpp -Ib-static/include b-static/libqev.a -lm -o cxx_suite_lib >cxx-suite-lib.log 2>&1; then
+  cxx_suite cxx-wrapper-suite cxx-suite-lib.log cxx_suite_lib
+else res cxx-wrapper-suite FAIL "compile: $(grep -m2 'error' cxx-suite-lib.log | tr '\n' ' ')"; fi
+if $CC -std=gnu99 -c -DEV_STANDALONE=1 -DEV_MULTIPLICITY=0 -I. ev.c -o ev-single.o >cxx-single-ev.log 2>&1 \
+   && $CXX -Wall -Wextra -DQEV_TEST_EMBEDDED -DEV_MULTIPLICITY=0 -I. tests/test-cxx.cpp ev-single.o -lm -o cxx_suite_single >cxx-suite-single.log 2>&1; then
+  cxx_suite cxx-single-loop-profile cxx-suite-single.log cxx_suite_single
+else res cxx-single-loop-profile FAIL "compile: $(grep -m2 'error' cxx-single-ev.log cxx-suite-single.log 2>/dev/null | tr '\n' ' ')"; fi
 
 # ---- cell: shared-prefix install ------------------------------------------
 # qb embeds this loop and installs it too, so both products can land in one prefix. They must not

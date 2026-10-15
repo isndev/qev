@@ -4448,7 +4448,8 @@ gets automatically stopped and restarted when reconfiguring it with this
 method.
 
 For C<ev::embed> watchers this method is called C<set_embed>, to avoid
-clashing with the C<set (loop)> method.
+clashing with the C<set (loop)> method, and C<start (loop)> calls it: the
+watcher stays on its own loop and embeds the one given.
 
 For C<ev::io> watchers there is an additional C<set> method that acepts a
 new event mask only, and internally calls C<ev_io_modify>.
@@ -4467,6 +4468,12 @@ the configure C<set> method of the watcher.
 =item w->stop ()
 
 Stops the watcher if it is active. Again, no C<loop> argument.
+
+=item (*w) (int revents = EV_UNDEF)
+
+Invokes the watcher's callback directly, as C<ev_invoke> would: with the
+watcher's own loop, the watcher and C<revents>. The watcher need not be
+active or pending, and its pending state is left as it is.
 
 =item w->again () (C<ev::timer>, C<ev::periodic> only)
 

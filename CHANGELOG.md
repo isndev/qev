@@ -29,9 +29,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   as having nothing to fire -- qb's listener gated its non-blocking pass that way. Listed in
   `Symbols.ev` and `docs/ev.pod`. Every other function of `ev.c`, `ev_run` included, compiles to
   the same instructions (MSVC x64 listing; g++-14 objdump, alignment padding aside). Exports:
-  86 `ev_*` on Linux -- 85 functions and the `ev_default_loop_ptr` variable; the build matrix's
-  census line counts `T`/`D`/`S` symbols only and reads 85 -- and 85 on Windows; qb's embedded
-  profile 73 on Linux, 74 on Windows. Test `test_periodic_count` (`tests/test-loops.c`: start,
+  86 `ev_*` on Linux -- 85 functions and the `ev_default_loop_ptr` variable, the count the build
+  matrix's census prints since QB-1071 -- and 85 on Windows; qb's embedded profile 73 on Linux,
+  74 on Windows. Test `test_periodic_count` (`tests/test-loops.c`: start,
   again, a one-shot firing and stopping itself, stop; unconditional floor 52 -> 58).
 - **`ev::loop_ref::periodic_count_addr()` in `ev++.h` (Huly QB-275).** The wrapper's twin of
   `timer_count_addr()`, under `EV_PERIODIC_ENABLE`: the address `ev_periodic_count_addr` answers. qb's
@@ -187,6 +187,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   pre-existing qb files, and a failed wrap-header preprocessor. Loop and wepoll tests now
   exercise the intended rearm, isolation, concurrent initialization, and backend paths.
   Benchmark labels no longer claim a backend or descriptor count they did not measure.
+- **The `ev++.h` and libevent-layer suites run under `ctest`, Windows included (Huly QB-1071).**
+  `tests/test-cxx.cpp` and `tests/test-event-compat.c` were built and run only by
+  `scripts/test-build-matrix.sh`, which runs on Linux and macOS; the Windows CI job runs `ctest`,
+  so neither had ever run on Windows. Both are registered now, as `cxx` and `event-compat`: the
+  first links the library, with C++ enabled for that target alone (a host without a C++ compiler
+  says so and builds the rest); the second links it when `QB_EV_LIBEVENT_COMPAT=ON` and otherwise
+  compiles `event.c` in itself, beside the headers that option stages, so every build checks the
+  layer. The matrix keeps its cells -- the single-loop `EV_MULTIPLICITY=0` profile, a compile
+  without a warning -- and its full-suites cell, like the Windows job, now requires every suite
+  registered (at least 4 on POSIX, 6 on Windows, where 4 registered before). A sanitizer build
+  with the tests on hands its flags to `CMAKE_CXX_FLAGS` as well as to `CMAKE_C_FLAGS`, as the
+  matrix's ASan/UBSan cell now does: the C++ suite links the instrumented library, and clang++,
+  unlike g++, does not pull the runtime in from C's implicit libraries. The matrix's symbol
+  census counts `.bss` symbols as well: `ev_default_loop_ptr`, the one exported variable, is
+  zero-initialised, and the `T`/`D`/`S` filter printed 85 `ev_*` where the archive exports 86,
+  the count `Symbols.ev` lists; the line now reads `86 ev_* (85 functions, 1 data)`.
 - **`test_clock_resolution` no longer fails on a loaded host (Huly QB-1056).** It opened its 50 ms
   window before taking the loop's first reading and took its last reading before the check that
   closed it, so a preemption at either end left the loop's clock measuring less than the window:

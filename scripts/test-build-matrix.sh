@@ -208,12 +208,14 @@ if cmake -S . -B b-static -DCMAKE_BUILD_TYPE=Release >b-static-cfg.log 2>&1 \
   [ "$W" = 0 ] && res cmake-static PASS "libqev.a, 0 warn" || res cmake-static FAIL "$W warnings"
 else res cmake-static FAIL "build error: $(tail -3 b-static.log 2>/dev/null|tr '\n' ' ')"; fi
 
-# The ordinary POSIX lane must execute both registered suites, not only build them.
+# The ordinary POSIX lane must execute every registered suite, not only build them: watchers,
+# loops, the ev++.h suite and the libevent layer's everywhere (Huly QB-1071), linux-internals on
+# Linux -- four at least.
 REGISTERED=$(ctest --test-dir b-static -N 2>/dev/null | grep -c 'Test #' || true)
-if [ "$REGISTERED" -ge 2 ] && ctest --test-dir b-static --output-on-failure >b-static-ctest.log 2>&1; then
+if [ "$REGISTERED" -ge 4 ] && ctest --test-dir b-static --output-on-failure >b-static-ctest.log 2>&1; then
   EXECUTED=$(grep -cE '^[[:space:]]*[0-9]+/[0-9]+ Test' b-static-ctest.log || true)
   SKIPPED=$(grep -c '\*\*\*Skipped' b-static-ctest.log || true)
-  if [ "$EXECUTED" -ge 2 ] && [ "$SKIPPED" -eq 0 ]; then
+  if [ "$EXECUTED" -ge 4 ] && [ "$SKIPPED" -eq 0 ]; then
     res cmake-full-suites PASS "registered=$REGISTERED executed=$EXECUTED skipped=$SKIPPED"
   else
     res cmake-full-suites FAIL "registered=$REGISTERED executed=$EXECUTED skipped=$SKIPPED"
@@ -281,9 +283,11 @@ else res autotools-configure-make SKIP "no autoreconf on host"; res autotools-sh
 # libev's intentional callback function-pointer type-pun (the common-initial-
 # sequence idiom central to the ev_* API). Exclude it on clang ONLY; gcc neither
 # supports nor enables the function sanitizer for C. All other checks stay on.
+# The flags go to C++ as well: the ev++.h suite links this instrumented library (Huly QB-1071), and
+# clang++, unlike g++, does not pull the sanitizer runtime in from C's implicit link libraries.
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
 case "$($CC --version 2>&1)" in *clang*) SAN="$SAN -fno-sanitize=function";; esac
-if cmake -S . -B b-san -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="$SAN" >b-san-cfg.log 2>&1 \
+if cmake -S . -B b-san -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" >b-san-cfg.log 2>&1 \
    && cmake --build b-san -j >b-san.log 2>&1 \
    && SANLIB=$(ls b-san/libqev*.a 2>/dev/null | head -1) \
    && [ -n "$SANLIB" ] \
@@ -387,8 +391,12 @@ else res shared-prefix-install FAIL "path(s) collide:$CLASH"; fi
 #   * event_*   FORBIDDEN unless QB_EV_LIBEVENT_COMPAT is ON. Those 24 unprefixed names collide with
 #               a real libevent, which is far more widely deployed than libev, and the two declare
 #               the same names over incompatible struct layouts.
+# Every defined kind counts: text (T), data (D), other sections (S) AND bss (B). ev_default_loop_ptr,
+# the one exported variable, is zero-initialised and lives in .bss, so a [TDS] filter missed it and
+# printed one ev_* less than the archive exports -- and than Symbols.ev lists (Huly QB-1071).
 if command -v nm >/dev/null 2>&1 && [ -f b-static/libqev.a ]; then
-  SYMS=$(nm -g b-static/libqev.a 2>/dev/null | grep -E ' [TDS] ' | awk '{print $3}' | sed 's/^_//' | sort -u)
+  SYMS=$(nm -g b-static/libqev.a 2>/dev/null | grep -E ' [TDSB] ' | awk '{print $3}' | sed 's/^_//' | sort -u)
+  NFN=$(nm -g b-static/libqev.a 2>/dev/null | grep -E ' T ' | awk '{print $3}' | sed 's/^_//' | sort -u | grep -c '^ev_' || true)
   NEV=$(printf '%s\n' "$SYMS" | grep -c '^ev_' || true)
   NQEV=$(printf '%s\n' "$SYMS" | grep -c '^qev_' || true)
   NEVT=$(printf '%s\n' "$SYMS" | grep -c '^event' || true)
@@ -398,7 +406,7 @@ if command -v nm >/dev/null 2>&1 && [ -f b-static/libqev.a ]; then
   elif [ "$NQEV" -ne 0 ]; then res symbol-census FAIL "$NQEV qev_* symbol(s) — the abandoned spelling is back"
   elif [ "$NEVT" -ne 0 ]; then res symbol-census FAIL "$NEVT unprefixed event_* — the libevent shim must stay OFF"
   elif [ "$NO"  -ne 0 ]; then res symbol-census FAIL "$NO symbol(s) outside ev_*: $(printf '%s' "$OTHER" | tr '\n' ' ' | cut -c1-120)"
-  else res symbol-census PASS "$NEV ev_*, 0 qev_*, 0 unprefixed event_*"
+  else res symbol-census PASS "$NEV ev_* ($NFN functions, $((NEV - NFN)) data), 0 qev_*, 0 unprefixed event_*"
   fi
 else res symbol-census SKIP "no nm, or no static archive"; fi
 

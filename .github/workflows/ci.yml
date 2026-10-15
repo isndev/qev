@@ -130,12 +130,15 @@ jobs:
       # months of green runs of exactly that shape.
       - name: Test (the watcher suite must actually run)
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Assert the suite was not empty
+      # Six suites register here: watchers, loops, wepoll, win32-internals, the ev++.h suite and
+      # the libevent layer's. The last two ran only in the POSIX build matrix until Huly QB-1071,
+      # and a floor of one let a lost suite stay green: the floor is the count.
+      - name: Assert every suite registered
         shell: bash
         run: |
           n=$(ctest --test-dir build -C Release -N | sed -n 's/^Total Tests: //p')
           echo "registered tests: ${n:-0}"
-          [ "${n:-0}" -ge 1 ] || { echo "::error::ctest registered no tests - the suite did not build"; exit 1; }
+          [ "${n:-0}" -ge 6 ] || { echo "::error::ctest registered ${n:-0} tests, expected at least 6 - a suite did not build"; exit 1; }
       # The invariant the artefact naming exists for. It needs an ARCHIVE, so it cannot live in a
       # source-level check.
       #   ev_*      EXPECTED - the library keeps libev's API names, so a migrating consumer

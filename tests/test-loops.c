@@ -533,8 +533,10 @@ static void test_nowait_clock(void) {
 /* A non-blocking pass with the flag reifies timers and invokes pending events but never calls
  * the backend poll; the next pass without it delivers what the fd holds; a BLOCKING pass ignores
  * the flag, because with an fd to wait on the poll is the wake. */
+#ifndef _WIN32
 static int nopoll_io_hits;
 static void nopoll_io_cb(struct ev_loop *l, ev_io *w, int r) { char c; (void)l; (void)r; (void) !read(w->fd, &c, 1); ++nopoll_io_hits; } /* drains, so the fd is quiet again */
+#endif /* POSIX read(): its one user is the pipe half below (an implicit declaration under clang-cl's C99) */
 static void test_nopoll(void) {
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
     ev_timer t;
@@ -644,6 +646,44 @@ static void test_now_set(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- a supplied clock's realtime refresh keeps a due periodic due (QB-316) ----
+   ev_now_set reads the realtime clock again once the supplied time has run MIN_TIMEJUMP/2 (half a
+   second) past the last real read, as time_update does. time_update recomputes the periodics only
+   when that read shows a wall-clock JUMP; ev_now_set recomputed them on every refresh -- and
+   recomputing an interval or rescheduled periodic moves its deadline past the new ev_rt_now, so
+   one that fell due inside that half second was pushed past the very pass that should fire it.
+   Each shape waits 0.6 s on the loop's own clock (past its 50 ms deadline AND past the refresh
+   threshold), then runs ONE non-blocking pass: through ev_now_set, and through a plain pass, the
+   control time_update always got right. A one-shot absolute periodic is never recomputed. */
+static int nsp_fired;
+static void nsp_cb(struct ev_loop *l, ev_periodic *w, int r) { (void)l; (void)w; (void)r; ++nsp_fired; }
+static ev_tstamp nsp_resched(ev_periodic *w, ev_tstamp now) { (void)w; return now + 0.05; }
+static int now_set_periodic_fires(int kind, int supplied) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_tstamp       t0 = ev_clock_now();
+    ev_periodic     p;
+    if (kind == 0)
+        ev_periodic_init(&p, nsp_cb, 0., 0.05, 0);             /* every 50 ms of wall clock */
+    else if (kind == 1)
+        ev_periodic_init(&p, nsp_cb, 0., 0., nsp_resched);     /* 50 ms after each fire, by its callback */
+    else
+        ev_periodic_init(&p, nsp_cb, ev_now(l) + 0.05, 0., 0); /* once, at an absolute time */
+    ev_periodic_start(l, &p);
+    nsp_fired = 0;
+    while (ev_clock_now() - t0 < 0.6) msleep(10);
+    if (supplied) ev_now_set(l, ev_clock_now());
+    ev_run(l, EVRUN_NOWAIT);
+    ev_periodic_stop(l, &p);
+    ev_loop_destroy(l);
+    return nsp_fired;
+}
+static void test_now_set_periodic(void) {
+    OK(now_set_periodic_fires(0, 0) == 1, "control: an interval periodic that fell due across the half-second realtime refresh fires on a plain NOWAIT pass");
+    OK(now_set_periodic_fires(0, 1) == 1, "and on a NOWAIT pass after ev_now_set: no wall-clock jump, so its deadline is not recomputed past the pass (QB-316)");
+    OK(now_set_periodic_fires(1, 1) == 1, "a rescheduled periodic due across ev_now_set's refresh fires too: its callback is not asked about a jump that did not happen (QB-316)");
+    OK(now_set_periodic_fires(2, 1) == 1, "control: a one-shot absolute periodic fires across ev_now_set's refresh, recomputed or not");
+}
+
 /* ---- the earliest deadline and the timer count, read without the loop (QB-190) ---- */
 static void test_timer_next(void) {
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
@@ -668,6 +708,38 @@ static void test_timer_next(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- the periodic count, read without the loop (Huly QB-275) ----
+   ev_timer_next already folds the earliest periodic into its deadline, but an embedder that asks
+   for that deadline only while *ev_timer_count_addr is non-zero never sees a loop that holds
+   periodics and no timer: ev_periodic_count_addr is the count it reads beside it. The address
+   follows start, stop, again and a one-shot periodic firing (which stops itself). */
+static int pc_fired;
+static void pc_cb(struct ev_loop *l, ev_periodic *w, int r) { (void)l; (void)w; (void)r; ++pc_fired; }
+static void test_periodic_count(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    const int      *n = ev_periodic_count_addr(l);
+    ev_periodic     once, every;
+    OK(n && *n == 0, "fresh loop: ev_periodic_count_addr is valid and reads 0");
+    ev_periodic_init(&once, pc_cb, ev_now(l) + 0.02, 0., 0);     /* fires once, 20 ms out */
+    ev_periodic_init(&every, pc_cb, 0., 3600., 0);               /* hourly, far away */
+    ev_periodic_start(l, &once);
+    ev_periodic_start(l, &every);
+    OK(*n == 2 && *ev_timer_count_addr(l) == 0, "two started periodics: the count reads 2 while the timer count still reads 0 -- what a timer-only gate missed");
+    ev_periodic_again(l, &every);
+    OK(*n == 2, "ev_periodic_again re-arms in place: still 2");
+    {
+        ev_tstamp t0 = ev_time();
+        pc_fired = 0;
+        do ev_run(l, EVRUN_ONCE); while (!pc_fired && ev_time() - t0 < 2.0);
+    }
+    OK(pc_fired == 1 && *n == 1 && ev_periodic_count_addr(l) == n, "the one-shot periodic fired and stopped itself: the count reads 1, through the same address");
+    ev_periodic_stop(l, &every);
+    OK(*n == 0, "stopping the last one brings it to 0");
+    ev_periodic_stop(l, &every);
+    OK(*n == 0, "stopping it a second time does not go below 0");
+    ev_loop_destroy(l);
+}
+
 #if EV_ASYNC_ENABLE
 /* ---- a wake that no pass has delivered, read without the loop (QB-190) ---- */
 static int wp_hits;
@@ -688,29 +760,46 @@ static void test_wake_pending(void) {
 }
 #endif
 
-#ifndef _WIN32
-/* ---- concurrent ev_loop_new from N threads (QB-192) ----
+/* ---- concurrent ev_loop_new from N threads (QB-192; Windows: QB-337, QB-340) ----
    Every VirtualCore thread in qb creates its own loop with ev_loop_new, which runs loop_init's
    have_realtime / have_monotonic capability probe -- file-scope flags shared by ALL loops. N
    threads doing that at once read and write those flags concurrently; before QB-192 that was a
    data race (idempotent, but a race), invisible until ev.c was instrumented. This drives the
    exact shape: THREADS loops created, each run once and destroyed, all at the same time. It
    asserts every loop came up with a working clock; under ThreadSanitizer it asserts the absence
-   of the loop_init race (a plain build cannot see it, which is the whole point of the gate). */
+   of the loop_init race (a plain build cannot see it, which is the whole point of the gate).
+   On Windows the same first loops also resolve the process-wide clock caches (ev_win32.c) and
+   run wepoll's global initialisation (the first epoll_create), both from N threads at once: the
+   same start gate, Win32 threads. No race detector exists for MSVC, so there the case asserts
+   that the cold, concurrent start WORKS; the single-initialiser property of the clock caches is
+   witnessed deterministically by tests/test-win32-internals.c. */
 #define NLOOP_THREADS 8
-static int       lc_ok[NLOOP_THREADS];
-static pthread_mutex_t lc_start_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  lc_start_cond = PTHREAD_COND_INITIALIZER;
+static int lc_ok[NLOOP_THREADS];
 static int lc_ready, lc_go;
+#ifdef _WIN32
+static SRWLOCK            lc_start_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE lc_start_cond = CONDITION_VARIABLE_INIT;
+# define LC_LOCK()      AcquireSRWLockExclusive(&lc_start_lock)
+# define LC_UNLOCK()    ReleaseSRWLockExclusive(&lc_start_lock)
+# define LC_WAIT()      SleepConditionVariableSRW(&lc_start_cond, &lc_start_lock, INFINITE, 0)
+# define LC_BROADCAST() WakeAllConditionVariable(&lc_start_cond)
+#else
+static pthread_mutex_t lc_start_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  lc_start_cond  = PTHREAD_COND_INITIALIZER;
+# define LC_LOCK()      pthread_mutex_lock(&lc_start_mutex)
+# define LC_UNLOCK()    pthread_mutex_unlock(&lc_start_mutex)
+# define LC_WAIT()      pthread_cond_wait(&lc_start_cond, &lc_start_mutex)
+# define LC_BROADCAST() pthread_cond_broadcast(&lc_start_cond)
+#endif
 static void lc_timer_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ev_break(l, EVBREAK_ALL); }
-static void *lc_thread(void *arg) {
-    int idx = *(int *) arg;
-    pthread_mutex_lock(&lc_start_mutex);
+static void lc_body(int idx) {
+    struct ev_loop *l;
+    LC_LOCK();
     ++lc_ready;
-    pthread_cond_broadcast(&lc_start_cond);
-    while (!lc_go) pthread_cond_wait(&lc_start_cond, &lc_start_mutex);
-    pthread_mutex_unlock(&lc_start_mutex);
-    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);   /* <- loop_init: the capability probe */
+    LC_BROADCAST();
+    while (!lc_go) LC_WAIT();
+    LC_UNLOCK();
+    l = ev_loop_new(EVFLAG_AUTO);                    /* <- loop_init: the capability probe */
     if (l) {
         ev_timer t;
         ev_timer_init(&t, lc_timer_cb, 0.001, 0.0); ev_timer_start(l, &t);
@@ -719,25 +808,47 @@ static void *lc_thread(void *arg) {
         ev_timer_stop(l, &t);
         ev_loop_destroy(l);
     }
-    return NULL;
 }
+#ifdef _WIN32
+static DWORD WINAPI lc_thread(LPVOID arg) { lc_body(*(int *) arg); return 0; }
+#else
+static void *lc_thread(void *arg) { lc_body(*(int *) arg); return NULL; }
+#endif
 static void test_concurrent_loop_new(void) {
+#ifdef _WIN32
+    HANDLE    th[NLOOP_THREADS];
+#else
     pthread_t th[NLOOP_THREADS];
-    int       id[NLOOP_THREADS], i, started = 0, all_ok = 1;
+#endif
+    int id[NLOOP_THREADS], i, started = 0, all_ok = 1;
     lc_ready = lc_go = 0;
     for (i = 0; i < NLOOP_THREADS; ++i) { lc_ok[i] = 0; id[i] = i; }
-    for (i = 0; i < NLOOP_THREADS; ++i)
+    for (i = 0; i < NLOOP_THREADS; ++i) {
+#ifdef _WIN32
+        if ((th[started] = CreateThread(NULL, 0, lc_thread, &id[i], 0, NULL)) != NULL) ++started;
+#else
         if (pthread_create(&th[started], NULL, lc_thread, &id[i]) == 0) ++started;
-    pthread_mutex_lock(&lc_start_mutex);
-    while (lc_ready < started) pthread_cond_wait(&lc_start_cond, &lc_start_mutex);
+#endif
+    }
+    LC_LOCK();
+    while (lc_ready < started) LC_WAIT();
     lc_go = 1;
-    pthread_cond_broadcast(&lc_start_cond);
-    pthread_mutex_unlock(&lc_start_mutex);
-    for (i = 0; i < started; ++i) pthread_join(th[i], NULL);
-    if (started < NLOOP_THREADS) { SKIP("concurrent ev_loop_new", "pthread_create failed"); return; }
+    LC_BROADCAST();
+    LC_UNLOCK();
+    for (i = 0; i < started; ++i) {
+#ifdef _WIN32
+        WaitForSingleObject(th[i], INFINITE);
+        CloseHandle(th[i]);
+#else
+        pthread_join(th[i], NULL);
+#endif
+    }
+    if (started < NLOOP_THREADS) { SKIP("concurrent ev_loop_new", "thread creation failed"); return; }
     for (i = 0; i < NLOOP_THREADS; ++i) all_ok = all_ok && lc_ok[i];
-    OK(all_ok, "N threads each create a loop, run a timer to completion and destroy it, concurrently: every loop's clock works (loop_init's capability probe is race-free -- QB-192)");
+    OK(all_ok, "N threads each create a loop, run a timer to completion and destroy it, concurrently: every loop's clock works (loop_init's capability probe is race-free -- QB-192; on Windows also the cold clock caches and wepoll's init -- QB-337, QB-340)");
 }
+
+#ifndef _WIN32
 
 /* ---- two threads sending into ONE loop at once (QB-192) ----
    The wake protocol's async_pending flag and each ev_async.sent are written by ANY sending
@@ -789,6 +900,37 @@ static void test_async_two_senders(void) {
     }
     ev_async_stop(l, &ts_a[0]); ev_async_stop(l, &ts_a[1]);
     ev_timer_stop(l, &far_off);
+    ev_loop_destroy(l);
+}
+
+/* ---- the owner's ev_async_pending against a send from another thread (QB-724) ----
+   ev_async_send publishes w->sent with a release store (EV_WAKE_STORE_REL); the public
+   ev_async_pending read it as a plain volatile lvalue -- not an atomic access, so the quick check
+   the manual recommends before running the loop raced the sender, and ThreadSanitizer reports it
+   as a data race. The witness is that check, spun by the owner while a second thread sends: a
+   plain build always saw the send; under TSan the read must also be race-free. */
+static ev_async ap_async;
+static int      ap_hits;
+static void ap_cb(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)w; (void)r; ++ap_hits; }
+static void *ap_sender(void *arg) { (void)arg; ev_async_send(nw_loop, &ap_async); return NULL; }
+static void test_async_pending_xthread(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    pthread_t       th;
+    nw_loop = l;
+    ap_hits = 0;
+    ev_async_init(&ap_async, ap_cb); ev_async_start(l, &ap_async);
+    OK(!ev_async_pending(&ap_async), "a started async watcher nothing was sent to is not pending");
+    if (pthread_create(&th, NULL, ap_sender, NULL) == 0) {
+        ev_tstamp t0   = ev_time();
+        int       seen = 0;
+        while (!(seen = ev_async_pending(&ap_async)) && ev_time() - t0 < 5.0) {}
+        pthread_join(th, NULL);
+        OK(seen, "the owner's ev_async_pending, spun while another thread sends, sees the send -- through the acquire load ev_async_send's release store pairs with (QB-724)");
+        ev_run(l, EVRUN_NOWAIT);
+        OK(ap_hits == 1 && !ev_async_pending(&ap_async), "the next pass delivers that send and clears the flag ev_async_pending reads");
+    } else
+        SKIP("ev_async_pending against a cross-thread send", "pthread_create failed");
+    ev_async_stop(l, &ap_async);
     ev_loop_destroy(l);
 }
 #endif
@@ -960,10 +1102,8 @@ int main(void) {
     printf("qev loop-mechanics coverage (ev %d.%d, backends=0x%x)\n",
            ev_version_major(), ev_version_minor(), ev_supported_backends());
 
-#ifndef _WIN32
     /* First loop creation must happen concurrently, before earlier cases warm globals. */
     test_concurrent_loop_new();
-#endif
     test_multi_loop_isolation();
     test_timer_ordering();
     test_timer_repeat();
@@ -985,7 +1125,9 @@ int main(void) {
     test_clock_resolution();
     test_nopoll();
     test_now_set();
+    test_now_set_periodic();
     test_timer_next();
+    test_periodic_count();
 #if EV_ASYNC_ENABLE
     test_wake_pending();
 #else
@@ -994,8 +1136,10 @@ int main(void) {
 #ifndef _WIN32
 # if EV_ASYNC_ENABLE
     test_async_two_senders();
+    test_async_pending_xthread();
 # else
     SKIP("two concurrent async senders", "async watchers compiled out");
+    SKIP("ev_async_pending against a cross-thread send", "async watchers compiled out");
 # endif
 #endif
 #ifdef __linux__
@@ -1007,15 +1151,16 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Forty-eight checks are unconditional in every profile on every platform (only the
-       cross-thread async cases, the fork case, the signal half of the NOWAIT cases, the pipe
+    /* Fifty-eight checks are unconditional in every profile on every platform (only the
+       cross-thread cases -- the concurrent loop creation and the async senders, which skip when
+       a thread cannot be created --, the fork case, the signal half of the NOWAIT cases, the pipe
        halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
        async watchers and the nanosecond epoll wait on a libc or kernel without epoll_pwait2
        can legitimately skip, and the backend probe skips only where every backend exists,
        which no platform has). A run below that floor measured nothing and must not read as a
        pass. */
-    if (g_run < 48) {
-        printf("== FAIL: only %d checks ran; at least 48 are unconditional ==\n", g_run);
+    if (g_run < 58) {
+        printf("== FAIL: only %d checks ran; at least 58 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

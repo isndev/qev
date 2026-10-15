@@ -6,8 +6,97 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **`EVFLAG_NOSIGMASK` leaves the signal mask alone, and without it a watched signal is unblocked
+  (Huly QB-713).** The test in `ev_signal_start` was inverted, as in libev 4.33 (libev's CVS has
+  reversed it since: "the behaviour of EV_NOSIGMASK was reversed"): with the flag, starting the
+  first watcher for a signal unblocked it in the calling thread -- the one modification the flag
+  exists to prevent, on a signal its caller keeps blocked on purpose (a sigwait thread feeding
+  `ev_feed_signal`) -- and without it the mask was never touched, though the manual says libev
+  unblocks. Now the default unblocks, as documented, and the flag never calls `sigprocmask`, the
+  signalfd path included (its block at the start, its unblock at the stop): with
+  `EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK` the caller keeps the signals blocked itself. `docs/ev.pod`
+  says so. Witness `test_signal_mask` (`tests/test-watchers.c`, three cases, red before).
+
+### Added
+
+- **`ev_periodic_count_addr(loop)`: the number of active periodics, read inline (Huly QB-275).**
+  `const int *ev_periodic_count_addr(EV_P)`, declared beside the other `ev_periodic_*` under
+  `EV_PERIODIC_ENABLE` and valid until `ev_loop_destroy`: the counterpart of `ev_timer_count_addr`.
+  `ev_timer_next` already folds the earliest periodic into its deadline, but an embedder that asks
+  for it only while `*ev_timer_count_addr` is non-zero saw a loop holding periodics and no timer
+  as having nothing to fire -- qb's listener gated its non-blocking pass that way. Listed in
+  `Symbols.ev` and `docs/ev.pod`. Every other function of `ev.c`, `ev_run` included, compiles to
+  the same instructions (MSVC x64 listing; g++-14 objdump, alignment padding aside). Exports:
+  86 `ev_*` on Linux -- 85 functions and the `ev_default_loop_ptr` variable; the build matrix's
+  census line counts `T`/`D`/`S` symbols only and reads 85 -- and 85 on Windows; qb's embedded
+  profile 73 on Linux, 74 on Windows. Test `test_periodic_count` (`tests/test-loops.c`: start,
+  again, a one-shot firing and stopping itself, stop; unconditional floor 52 -> 58).
+
 ### Fixed
 
+- **Windows: the `SOCKET <-> fd` registry never writes past its free list (Huly QB-315).** The free
+  list grew on a release, announcing its new size before a `realloc` whose failure the release
+  ignored: the next release wrote through NULL (first growth) or past the old block (later
+  growth). Both tables now grow together, geometrically, in `ev_win32_fd_reserve`, each size
+  committed only after its `realloc` succeeded; the free list can then hold every index ever
+  issued, so a release never allocates, and a failed acquire returns `ENOMEM` with nothing
+  consumed. Witness: the new white-box suite `tests/test-win32-internals.c` (it compiles `ev.c` in,
+  with an allocator that fails on demand, and checks every announced size against `_msize`).
+- **Windows: stopping one of several watchers on a socket no longer deregisters the others
+  (Huly QB-317).** `ev_io_stop` deleted the socket's wepoll registration unconditionally; with
+  another watcher left on it and the aggregate mask unchanged, `fd_reify` never re-added it, and
+  the survivor stayed active with no event ever. The eager delete now happens for the last
+  watcher only (it keeps protecting a recycled fd from a stale registration) and resets the fd's
+  recorded kernel state, so a watcher restarted before the next pass -- with or without
+  `ev_io_set_sock` -- is added again; that restart was lost the same way. Witness
+  `test_shared_socket` (`tests/test-wepoll.c`, floor 13 -> 17).
+- **Windows: the clock caches are initialised once (Huly QB-337).** Every thread that read a
+  clock cold resolved `GetSystemTimePreciseAsFileTime` and computed the `QueryPerformanceCounter`
+  scale and stored them, unsynchronised: identical values, a data race all the same, reachable
+  by concurrent `ev_loop_new`. They are set once under `InitOnceExecuteOnce` with release stores
+  and tested with acquire loads -- a plain `mov` on x86-64 -- each cache a union of its value and
+  the integer image the atomics move, the cold path out of line. MSVC x64 listings, base against
+  fix: `ev_run` identical; the QPC read two instructions shorter (an integer test replaces the FP
+  compare and its parity branch; the multiply reads the same global). Witness
+  `test_clock_cold_start` in the white-box suite (four cold threads: four concurrent initialisers
+  before, one after).
+- **Windows: wepoll's "initialised" flag publishes its initialisation (Huly QB-340).**
+  `init()` -- on every `epoll_*` call -- skipped `InitOnceExecuteOnce` when a plain `bool` said the
+  initialisation completed, with no happens-before with what it set up. It is an acquire load of
+  a flag the once-callback release-stores: a plain load on x86-64 (MSVC: `mov` + `test` where
+  `cmp BYTE PTR` was, one instruction at the entry of calls that then wait on IOCP), an `ldar` on
+  arm64. No race detector exists for MSVC and x86-64 cannot exhibit it: the concurrent cold start
+  (`test_concurrent_loop_new`, now on Windows too) is a functional check, not its witness.
+- **`ev_now_set` keeps a due periodic due across its realtime refresh (Huly QB-316).** Every half
+  `MIN_TIMEJUMP` the supplied clock's pass reads the wall clock again, and it recomputed every
+  periodic -- moving an interval or rescheduled one that had fallen due in that half second past
+  the pass that should fire it. It now recomputes them only when the read shows a wall-clock jump,
+  the test `time_update` makes, in an out-of-line refresh: the per-pass path compiles to the
+  same instructions (MSVC x64 listing). Witness `test_now_set_periodic` (`tests/test-loops.c`).
+- **The realtime timerfd recomputes the periodics only on a wall-clock jump (Huly QB-1055).** With
+  `EV_USE_TIMERFD` (off by default; `QB_EV_USE_TIMERFD`), the timerfd also turns readable when its
+  own deadline, `MAX_BLOCKTIME2` (about seventeen days) ahead, runs out, when it is first armed,
+  and after a fork; its callback recomputed every periodic on each of those wakes, so one due but
+  not yet delivered was pushed past its fire and every rescheduler was asked again. It now applies
+  the jump test of `time_update`, measured afresh -- one macro, `time_jumped`, shared with
+  `ev_now_set`'s refresh. The default build compiles to the same instructions, every function of
+  `ev.c` (g++-14 objdump, MSVC listing). Witness: the new white-box suite
+  `tests/test-linux-internals.c` (Linux; `ev.c` compiled in with the timerfd forced on, the callback
+  driven as the loop drives it): 2 FAIL before, 4/4 after.
+- **`ev_async_pending` reads `sent` with an acquire load (Huly QB-724).** It was a plain read of a
+  flag `ev_async_send` sets from another thread with a release store; ThreadSanitizer reported the
+  owner's quick check as a data race. The macro now makes the access `EV_WAKE_LOAD` makes, under
+  the same `EV_NO_ATOMIC_BUILTINS` opt-out; `ev_async` and the C99 floor are unchanged, and every
+  line of `ev.h` before the helper keeps its number. Witness `test_async_pending_xthread`
+  (`tests/test-loops.c`, under TSan).
+- **An `ev_once` still waiting when its loop is destroyed is freed (Huly QB-736).** Only its
+  callback freed its private allocation; a loop destroyed first (the timeout ahead, the event
+  queued but not invoked) kept it. `ev_loop_destroy` now finds each one through the loop's own
+  structures (the fd lists, the timer heap, the pending queues), frees it once, and invokes
+  nothing. Witness: `test_once` with a counting `ev_set_allocator` (four teardown shapes, two more
+  on POSIX; floor 4 -> 8). `tests/test-loops.c`'s unconditional floor is 48 -> 52.
 - **Release checks cannot certify cached refs or sweep unrelated files into a version roll
   (Huly QB-717, QB-1038).** The qev train requires fresh develop/main fetches for qev, qb and
   the root, treats ordinary untracked files as dirty, and stages only the six files it owns.

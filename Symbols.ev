@@ -47,6 +47,7 @@ ev_once
 ev_pending_count
 ev_pending_count_addr
 ev_periodic_again
+ev_periodic_count_addr
 ev_periodic_start
 ev_periodic_stop
 ev_prepare_start

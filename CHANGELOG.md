@@ -19,6 +19,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   `EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK` the caller keeps the signals blocked itself. `docs/ev.pod`
   says so. Witness `test_signal_mask` (`tests/test-watchers.c`, three cases, red before).
 
+### Added
+
+- **`ev_periodic_count_addr(loop)`: the number of active periodics, read inline (Huly QB-275).**
+  `const int *ev_periodic_count_addr(EV_P)`, declared beside the other `ev_periodic_*` under
+  `EV_PERIODIC_ENABLE` and valid until `ev_loop_destroy`: the counterpart of `ev_timer_count_addr`.
+  `ev_timer_next` already folds the earliest periodic into its deadline, but an embedder that asks
+  for it only while `*ev_timer_count_addr` is non-zero saw a loop holding periodics and no timer
+  as having nothing to fire -- qb's listener gated its non-blocking pass that way. Listed in
+  `Symbols.ev` and `docs/ev.pod`. Every other function of `ev.c`, `ev_run` included, compiles to
+  the same instructions (MSVC x64 listing; g++-14 objdump, alignment padding aside). Exports:
+  86 `ev_*` on Linux -- 85 functions and the `ev_default_loop_ptr` variable; the build matrix's
+  census line counts `T`/`D`/`S` symbols only and reads 85 -- and 85 on Windows; qb's embedded
+  profile 73 on Linux, 74 on Windows. Test `test_periodic_count` (`tests/test-loops.c`: start,
+  again, a one-shot firing and stopping itself, stop; unconditional floor 52 -> 58).
+
 ### Fixed
 
 - **Windows: the `SOCKET <-> fd` registry never writes past its free list (Huly QB-315).** The free

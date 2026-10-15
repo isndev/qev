@@ -7,8 +7,9 @@
 #
 # Exercises: CMake static + shared, autotools ./configure && make (libtool static
 # + shared), find_package(qev) consumer (static & shared), ASan/UBSan smoke,
-# per-backend runtime probe, and the C++ (ev++.h) wrapper suite against the library and in the
-# single-loop (EV_MULTIPLICITY=0) embedding profile.
+# per-backend runtime probe, the C++ (ev++.h) wrapper suite against the library and in the
+# single-loop (EV_MULTIPLICITY=0) embedding profile, and the opt-in profile (linux aio backend +
+# libevent compatibility layer) with its tests.
 #
 # Emits "RESULT|<cell>|<PASS|FAIL|SKIP>|<detail>" lines and a final summary.
 # Exits 0 by default (the caller tallies RESULT lines). Set STRICT=1 to exit
@@ -330,6 +331,26 @@ if $CC -std=gnu99 -c -DEV_STANDALONE=1 -DEV_MULTIPLICITY=0 -I. ev.c -o ev-single
    && $CXX -Wall -Wextra -DQEV_TEST_EMBEDDED -DEV_MULTIPLICITY=0 -I. tests/test-cxx.cpp ev-single.o -lm -o cxx_suite_single >cxx-suite-single.log 2>&1; then
   cxx_suite cxx-single-loop-profile cxx-suite-single.log cxx_suite_single
 else res cxx-single-loop-profile FAIL "compile: $(grep -m2 'error' cxx-single-ev.log cxx-suite-single.log 2>/dev/null | tr '\n' ' ')"; fi
+
+# ---- cell: the opt-in profile (linux aio backend + libevent compatibility layer) ----
+# Both are OFF by default, so no other cell ever compiled them, and neither had a test: the aio
+# backend kept two of its arrays past teardown and past its fallback to epoll (QB-338), and
+# event_del let a timeout made pending by event_active run after the removal (QB-712). This cell
+# builds the profile, runs the loop suite over it -- on Linux the aio cases must run, not SKIP --
+# and links and runs tests/test-event-compat.c against the layer.
+if cmake -S . -B b-optin -DCMAKE_BUILD_TYPE=Release -DQB_EV_USE_LINUXAIO=ON -DQB_EV_LIBEVENT_COMPAT=ON >b-optin-cfg.log 2>&1 \
+   && cmake --build b-optin -j >b-optin.log 2>&1; then
+  W=$(grep -ci 'warning:' b-optin.log)
+  ./b-optin/qev-test-loops >b-optin-loops.log 2>&1; OPT_RC=$?
+  AIO_RAN=$(grep -c 'PASS  linux aio' b-optin-loops.log || true)
+  $CC tests/test-event-compat.c -Ib-optin/include b-optin/libqev.a -lm -o event_compat >event-compat-link.log 2>&1 \
+    && ./event_compat >event-compat-run.log 2>&1; EVC_RC=$?
+  detail="$(grep '== loops' b-optin-loops.log | tr -d '=' | sed 's/^ *//;s/ *$//'), aio cases passed=$AIO_RAN; $(grep '== event-compat' event-compat-run.log 2>/dev/null | tr -d '=' | sed 's/^ *//;s/ *$//')"
+  if [ "$W" != 0 ]; then res opt-in-profile FAIL "$W warnings"
+  elif [ "$OPT_RC" -ne 0 ] || [ "$EVC_RC" -ne 0 ]; then res opt-in-profile FAIL "$detail $(grep -h 'FAIL' b-optin-loops.log event-compat-run.log event-compat-link.log 2>/dev/null | head -2 | tr '\n' ' ')"
+  elif [ "$(uname -s)" = Linux ] && [ "$AIO_RAN" -lt 2 ]; then res opt-in-profile FAIL "the linux aio cases did not run: $detail"
+  else res opt-in-profile PASS "$detail"; fi
+else res opt-in-profile FAIL "build error: $(tail -3 b-optin.log b-optin-cfg.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # ---- cell: shared-prefix install ------------------------------------------
 # qb embeds this loop and installs it too, so both products can land in one prefix. They must not

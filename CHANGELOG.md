@@ -8,6 +8,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **libevent compatibility: `event_del` cancels an activation still pending (Huly QB-712).** It
+  stopped the timeout only when the timer was active, and `event_active (ev, EV_TIMEOUT, …)` makes
+  it pending without starting it, so the callback ran on the next pass after the removal -- and a
+  caller that freed the event at once left the loop a pending pointer into freed memory (ASan:
+  heap-use-after-free in `ev_invoke_pending` on `b1c7843`, clean after). The io
+  watcher of an event with no fd interest, made pending by `event_active (ev, EV_READ, …)`, was
+  not stopped either. `event_del` now stops the signal or io watcher and the timer
+  unconditionally: a stop clears a pending activation and does nothing more to an inactive
+  watcher. `tests/test-event-compat.c`, the first test of the layer, checks each activation kind
+  deleted and kept, and a timeout armed then deleted; on `b1c7843` the two deleted activations ran
+  their callback once each. The build matrix now builds the opt-in profile
+  (`QB_EV_USE_LINUXAIO=ON`, `QB_EV_LIBEVENT_COMPAT=ON`), which no cell had compiled, runs the loop
+  suite over it -- on Linux its aio cases must run -- and runs this test.
 - **C++ wrapper: three members that never compiled or never did their job (Huly QB-312, QB-313,
   QB-711).** The wrapper is templates, and a member nothing instantiates is never compiled:
   `w (revents)` passed the watcher where the callback takes the loop and did not compile as soon

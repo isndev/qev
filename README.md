@@ -236,7 +236,8 @@ Everything else:
   priorities, `ev_feed_event`, a real `fork()`, a cross-thread `ev_async_send`, a thousand
   concurrent timers, the io_uring/epoll parity check); on Windows, the wepoll backend over
   native sockets and a white-box suite of the process-wide state (the `SOCKET ↔ fd` registry
-  under allocation failure, the clock caches started cold from several threads).
+  under allocation failure, the clock caches started cold from several threads); on Linux, a
+  white-box suite of the realtime timerfd's wakes.
 
 [CHANGELOG.md](CHANGELOG.md) carries the complete, file-by-file list.
 

@@ -60,6 +60,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   the pass that should fire it. It now recomputes them only when the read shows a wall-clock jump,
   the test `time_update` makes, in an out-of-line refresh: the per-pass path compiles to the
   same instructions (MSVC x64 listing). Witness `test_now_set_periodic` (`tests/test-loops.c`).
+- **The realtime timerfd recomputes the periodics only on a wall-clock jump (Huly QB-1055).** With
+  `EV_USE_TIMERFD` (off by default; `QB_EV_USE_TIMERFD`), the timerfd also turns readable when its
+  own deadline, `MAX_BLOCKTIME2` (about seventeen days) ahead, runs out, when it is first armed,
+  and after a fork; its callback recomputed every periodic on each of those wakes, so one due but
+  not yet delivered was pushed past its fire and every rescheduler was asked again. It now applies
+  the jump test of `time_update`, measured afresh -- one macro, `time_jumped`, shared with
+  `ev_now_set`'s refresh. The default build compiles to the same instructions, every function of
+  `ev.c` (g++-14 objdump, MSVC listing). Witness: the new white-box suite
+  `tests/test-linux-internals.c` (Linux; `ev.c` compiled in with the timerfd forced on, the callback
+  driven as the loop drives it): 2 FAIL before, 4/4 after.
 - **`ev_async_pending` reads `sent` with an acquire load (Huly QB-724).** It was a plain read of a
   flag `ev_async_send` sets from another thread with a release store; ThreadSanitizer reported the
   owner's quick check as a data race. The macro now makes the access `EV_WAKE_LOAD` makes, under

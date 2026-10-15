@@ -578,6 +578,12 @@ The current implementation only tries to use a C<timerfd> when the first
 C<ev_periodic> watcher is started and falls back on other methods if it
 cannot be created, but this behaviour might change in the future.
 
+qev: the timerfd also wakes the loop when its own long deadline runs out
+and after a fork; the periodics are recomputed only when the wall clock
+really moved against the monotonic clock, by C<MIN_TIMEJUMP> or more -
+the test the loop's own time update makes - so a periodic due at that
+moment still fires.
+
 =item C<EVBACKEND_SELECT>  (value 1, portable select backend)
 
 This is your standard select(2) backend. Not I<completely> standard, as

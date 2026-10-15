@@ -33,6 +33,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   census line counts `T`/`D`/`S` symbols only and reads 85 -- and 85 on Windows; qb's embedded
   profile 73 on Linux, 74 on Windows. Test `test_periodic_count` (`tests/test-loops.c`: start,
   again, a one-shot firing and stopping itself, stop; unconditional floor 52 -> 58).
+- **`ev::loop_ref::periodic_count_addr()` in `ev++.h` (Huly QB-275).** The wrapper's twin of
+  `timer_count_addr()`, under `EV_PERIODIC_ENABLE`: the address `ev_periodic_count_addr` answers. qb's
+  listener reads it beside the timer count to judge a periodic's deadline on a non-blocking pass. Test
+  `test_count_addrs` (`tests/test-cxx.cpp`, both profiles: the address, and the count following
+  `ev::periodic` start and stop while the timer count stays 0).
 
 ### Fixed
 

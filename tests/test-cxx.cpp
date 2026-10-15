@@ -127,6 +127,35 @@ static void test_direct_invocation_loop(ev::loop_ref a, ev::loop_ref b) {
     OK(on_a && on_b, "a direct call passes the C callback its watcher's loop, the watcher and the revents, on each of two loops (QB-312)");
 }
 
+/* ---- the inline counts an embedder gates on, through the wrapper ---- */
+#if EV_PERIODIC_ENABLE
+static void periodic_fn(ev::periodic &, int) {}
+#endif
+
+static void test_count_addrs(ev::loop_ref l) {
+#if EV_PERIODIC_ENABLE
+    /* periodic_count_addr () is the loop's own periodic count, the twin of timer_count_addr (): a
+       loop holding a periodic and no timer reads 1 there and 0 beside it (Huly QB-275). */
+    const int   *pc = l.periodic_count_addr();
+    const int   *tc = l.timer_count_addr();
+    ev::periodic p ON(l);
+    p.set<periodic_fn>();
+    const bool idle = *pc == 0 && *tc == 0;
+    p.start(l.now() + 3600., 0.);
+    const bool armed = *pc == 1 && *tc == 0;
+    p.stop();
+#if EV_MULTIPLICITY
+    OK(pc == ev_periodic_count_addr(static_cast<struct ev_loop *>(l)), "periodic_count_addr () is the address ev_periodic_count_addr () answers (QB-275)");
+#else
+    OK(pc == ev_periodic_count_addr(), "periodic_count_addr () is the address ev_periodic_count_addr () answers (QB-275)");
+#endif
+    OK(idle && armed && *pc == 0, "periodic_count_addr () follows ev::periodic start and stop while the timer count stays 0 (QB-275)");
+#else
+    (void) l;
+    SKIP("periodic_count_addr () (QB-275)", "periodics compiled out");
+#endif
+}
+
 /* ---- ev::embed::start (loop) embeds that loop and stays on its own ---- */
 #if defined(EV_EMBED_ENABLE) && EV_EMBED_ENABLE && !defined(_WIN32)
 static int  embed_hits;
@@ -203,10 +232,12 @@ int main() {
         ev::dynamic_loop b;
         test_callback_forms(a);
         test_direct_invocation_loop(a, b);
+        test_count_addrs(a);
 #else
         ev::default_loop a;
         test_callback_forms(a);
         test_direct_invocation_loop(a, a);
+        test_count_addrs(a);
 #endif
     }
 #if defined(EV_EMBED_ENABLE) && EV_EMBED_ENABLE && !defined(_WIN32)

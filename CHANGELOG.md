@@ -41,6 +41,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Fixed
 
+- **The wake pipe says why it ignores two results, and the `-Wno-unused-result` mask is gone (Huly
+  QB-1079).** `evpipe_write`'s `write()` and `pipecb`'s drain `read()` ignore their result on purpose
+  -- a non-blocking write fails only with `EAGAIN` when a wake is already pending, a signal handler
+  can do nothing safe about anything else, and a drain fails only on an empty pipe -- but nothing in
+  the code said so: the library target masked the warning with `-Wno-unused-result`, which hid every
+  other ignored result too, and a build without that mask (the white-box `tests/test-linux-internals.c`,
+  or an embedder compiling `ev.c` itself) under a fortified glibc got four `-Wunused-result` warnings
+  (gcc 13, Ubuntu 24.04). The four results are now taken and discarded explicitly, with the reason
+  beside `evpipe_write`, and the mask is removed. The object code is unchanged instruction for
+  instruction (162/162 functions under gcc 14, 135/135 under clang 19). The build matrix also
+  compiles its hand-built C++ suite as `-std=c++17`, like the CMake target, and a red cell now prints
+  its first warnings.
 - **Windows: the `SOCKET <-> fd` registry never writes past its free list (Huly QB-315).** The free
   list grew on a release, announcing its new size before a `realloc` whose failure the release
   ignored: the next release wrote through NULL (first growth) or past the old block (later

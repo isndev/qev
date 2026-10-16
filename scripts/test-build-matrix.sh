@@ -205,7 +205,7 @@ bad=""
 if cmake -S . -B b-static -DCMAKE_BUILD_TYPE=Release >b-static-cfg.log 2>&1 \
    && cmake --build b-static -j >b-static.log 2>&1 && ls b-static/libqev.a >/dev/null 2>&1; then
   W=$(grep -ci 'warning:' b-static.log)
-  [ "$W" = 0 ] && res cmake-static PASS "libqev.a, 0 warn" || res cmake-static FAIL "$W warnings"
+  [ "$W" = 0 ] && res cmake-static PASS "libqev.a, 0 warn" || res cmake-static FAIL "$W warnings: $(grep -i -m2 'warning:' b-static.log | tr '\n' ' ')"
 else res cmake-static FAIL "build error: $(tail -3 b-static.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # The ordinary POSIX lane must execute every registered suite, not only build them: watchers,
@@ -229,7 +229,7 @@ if cmake -S . -B b-shared -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON >b-s
    && cmake --build b-shared -j >b-shared.log 2>&1; then
   SO=$(ls b-shared/libqev.so* b-shared/libqev*.dylib 2>/dev/null | head -1)
   W=$(grep -ci 'warning:' b-shared.log)
-  if [ -n "$SO" ] && [ "$W" = 0 ]; then res cmake-shared PASS "$(basename "$SO"), 0 warn"; else res cmake-shared FAIL "so='$SO' warn=$W"; fi
+  if [ -n "$SO" ] && [ "$W" = 0 ]; then res cmake-shared PASS "$(basename "$SO"), 0 warn"; else res cmake-shared FAIL "so='$SO' warn=$W: $(grep -i -m2 'warning:' b-shared.log | tr '\n' ' ')"; fi
 else res cmake-shared FAIL "build error: $(tail -3 b-shared.log 2>/dev/null|tr '\n' ' ')"; fi
 
 # ---- cell: cmake install + find_package(qev) consumer (static) ------------
@@ -330,11 +330,11 @@ cxx_suite() { # <cell> <compile log> <binary>
   elif "./$3" >"$3.log" 2>&1; then res "$1" PASS "$(grep '== cxx' "$3.log" | tr -d '=' | sed 's/^ *//;s/ *$//')"
   else res "$1" FAIL "$(grep -E 'FAIL|== cxx' "$3.log" | head -3 | tr '\n' ' ')"; fi
 }
-if $CXX -Wall -Wextra tests/test-cxx.cpp -Ib-static/include b-static/libqev.a -lm -o cxx_suite_lib >cxx-suite-lib.log 2>&1; then
+if $CXX -std=c++17 -Wall -Wextra tests/test-cxx.cpp -Ib-static/include b-static/libqev.a -lm -o cxx_suite_lib >cxx-suite-lib.log 2>&1; then
   cxx_suite cxx-wrapper-suite cxx-suite-lib.log cxx_suite_lib
 else res cxx-wrapper-suite FAIL "compile: $(grep -m2 'error' cxx-suite-lib.log | tr '\n' ' ')"; fi
 if $CC -std=gnu99 -c -DEV_STANDALONE=1 -DEV_MULTIPLICITY=0 -I. ev.c -o ev-single.o >cxx-single-ev.log 2>&1 \
-   && $CXX -Wall -Wextra -DQEV_TEST_EMBEDDED -DEV_MULTIPLICITY=0 -I. tests/test-cxx.cpp ev-single.o -lm -o cxx_suite_single >cxx-suite-single.log 2>&1; then
+   && $CXX -std=c++17 -Wall -Wextra -DQEV_TEST_EMBEDDED -DEV_MULTIPLICITY=0 -I. tests/test-cxx.cpp ev-single.o -lm -o cxx_suite_single >cxx-suite-single.log 2>&1; then
   cxx_suite cxx-single-loop-profile cxx-suite-single.log cxx_suite_single
 else res cxx-single-loop-profile FAIL "compile: $(grep -m2 'error' cxx-single-ev.log cxx-suite-single.log 2>/dev/null | tr '\n' ' ')"; fi
 
@@ -352,7 +352,7 @@ if cmake -S . -B b-optin -DCMAKE_BUILD_TYPE=Release -DQB_EV_USE_LINUXAIO=ON -DQB
   $CC tests/test-event-compat.c -Ib-optin/include b-optin/libqev.a -lm -o event_compat >event-compat-link.log 2>&1 \
     && ./event_compat >event-compat-run.log 2>&1; EVC_RC=$?
   detail="$(grep '== loops' b-optin-loops.log | tr -d '=' | sed 's/^ *//;s/ *$//'), aio cases passed=$AIO_RAN; $(grep '== event-compat' event-compat-run.log 2>/dev/null | tr -d '=' | sed 's/^ *//;s/ *$//')"
-  if [ "$W" != 0 ]; then res opt-in-profile FAIL "$W warnings"
+  if [ "$W" != 0 ]; then res opt-in-profile FAIL "$W warnings: $(grep -i -m2 'warning:' b-optin.log | tr '\n' ' ')"
   elif [ "$OPT_RC" -ne 0 ] || [ "$EVC_RC" -ne 0 ]; then res opt-in-profile FAIL "$detail $(grep -h 'FAIL' b-optin-loops.log event-compat-run.log event-compat-link.log 2>/dev/null | head -2 | tr '\n' ' ')"
   elif [ "$(uname -s)" = Linux ] && [ "$AIO_RAN" -lt 2 ]; then res opt-in-profile FAIL "the linux aio cases did not run: $detail"
   else res opt-in-profile PASS "$detail"; fi
@@ -421,7 +421,7 @@ else res symbol-census SKIP "no nm, or no static archive"; fi
 if cmake -S . -B b-reduced -DCMAKE_BUILD_TYPE=Release -DQB_EV_WATCHERS_FULL=OFF >b-red-cfg.log 2>&1 \
    && cmake --build b-reduced -j >b-red.log 2>&1; then
   W=$(grep -ci 'warning:' b-red.log)
-  if [ "$W" != 0 ]; then res reduced-profile FAIL "$W warnings"
+  if [ "$W" != 0 ]; then res reduced-profile FAIL "$W warnings: $(grep -i -m2 'warning:' b-red.log | tr '\n' ' ')"
   else
     ./b-reduced/qev-test-watchers >b-reduced-watchers.log 2>&1
     RED_RC=$?

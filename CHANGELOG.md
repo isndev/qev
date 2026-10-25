@@ -45,6 +45,16 @@ Nothing yet. Entries land here as they are merged, and move under a version head
 
 ### Fixed
 
+- **Windows: a consumer of the shared library imports the loop's two exported variables (Huly
+  QB-1136).** `ev_default_loop_ptr` and `ev_rt_now` are data symbols: `WINDOWS_EXPORT_ALL_SYMBOLS`
+  exports them from `qev.dll`, but a translation unit that reads one -- `EV_DEFAULT_UC`, hence the
+  libevent layer -- links only with `__declspec(dllimport)`. `ev.h` declares both through
+  `EV_API_DATA_DECL`, which the shared target turns on for every consumer with the INTERFACE
+  definition `QEV_DLL` (the library's own units and every static build keep plain `extern`); the
+  default-loop pointer is declared once at file scope instead of libev's block-scope `extern`
+  inside `ev_default_loop_uc_`. Found by the 5.2.0 Windows archive job, the first to link the
+  libevent suite against the DLL (`LNK2019 ev_default_loop_ptr`); `ci.yml`'s `windows-msvc` job
+  now builds and tests the shared library as `release.yml` archives it.
 - **The wake pipe says why it ignores two results, and the `-Wno-unused-result` mask is gone (Huly
   QB-1079).** `evpipe_write`'s `write()` and `pipecb`'s drain `read()` ignore their result on purpose
   -- a non-blocking write fails only with `EAGAIN` when a wake is already pending, a signal handler

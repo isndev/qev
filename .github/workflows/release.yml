@@ -70,11 +70,14 @@ jobs:
           "$python_cmd" ../scripts/check-release-archives.py --self-test
           "$python_cmd" ../scripts/check-release-archives.py --directory . --system "$system" --version "$version"
 
+      # The publish job below attaches the archives to the release within the run; a week covers a
+      # re-run of that job alone, and the release page is where they live afterwards.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qev-${{ matrix.os }}
           path: build/*.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
   source:
     name: source archive
@@ -106,6 +109,7 @@ jobs:
           name: qev-source
           path: build/qev-*-Source.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
   publish:
     name: attach to the release

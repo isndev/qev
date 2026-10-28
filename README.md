@@ -278,6 +278,7 @@ family, so a green `ctest` proves the set is whole.
 | tests | on by default with `BUILD_TESTING=ON`; controlled by `QB_EV_BUILD_TESTS` | off by default |
 | benchmark targets | on by default with `QB_EV_BUILD_BENCHMARKS`, independently of `BUILD_TESTING` | off by default |
 | install, CPack, `qev.pc`, `qevConfig.cmake` | yes | no (qb installs its own copy under `qb/ev/`) |
+| link names | libev's own (`ev_run`) | `qb_` + libev's name (`qb_ev_run`); source still writes `ev_run` |
 
 `ev.h`'s own `#ifndef` defaults are libev's, so a build that carries no configuration header —
 an autotools build, or a consumer that lost the `ev_config.h` define — gets the whole library;

@@ -6,7 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
-Nothing yet. Entries land here as they are merged, and move under a version heading when that version is tagged.
+### Changed
+
+- **Embedded, the library links under its embedder's names; standalone, nothing changes (Huly QB-1139).**
+  Built through `add_subdirectory` with `QB_EV_EMBED_INCLUDE_DIR` set -- the way qb builds it -- every function
+  and variable the library exports links as `qb_` + its libev name (`qb_ev_run`), and wepoll's five functions
+  as `qb_ev_epoll_*` inside the library's own translation units on Windows. The generated `ev_config.h`, which
+  `ev.h` includes before it declares anything, carries one `#define` per name, so source keeps libev's
+  spelling. The list sits beside `QB_EV_EXPORTED_NAMES` in `CMakeLists.txt`: every name `ev.h` declares with
+  `EV_API_DECL` / `EV_API_DATA_DECL`, but `ev_rt_now` (exported only without `EV_MULTIPLICITY`, a loop member
+  under it). Before, qb's copy and any other libev in the same program shared every link name and the link
+  line chose between them -- measured on ld64, a foreign libev first on the line made qb's loop call the
+  foreign `ev_loop_new`. A standalone build's `ev_config.h` says it keeps libev's own names, and its archive
+  exports exactly what it did.
 
 ## [5.2.0] — 2026-10-25
 

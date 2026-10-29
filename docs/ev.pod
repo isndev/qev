@@ -948,6 +948,15 @@ change as long as callbacks are being processed, and this is also the base
 time used for relative timers. You can treat it as the timestamp of the
 event occurring (or more correctly, libev finding out about it).
 
+It is wall-clock time: read from the wall clock every half second at most
+and advanced on the monotonic clock in between. Where that clock is not
+corrected along with the wall clock -- C<QueryPerformanceCounter> on
+Windows, C<CLOCK_MONOTONIC_RAW> on Apple -- it drifts from the wall clock in
+between by the rate of the correction under way, and the next read moves it
+back or forward by up to half a second times that rate (8.3 microseconds at
+16.6 ppm, 270 or more at 540 ppm or more): C<ev_now> is not monotonic. Measure a
+duration on C<ev_clock_now ()>.
+
 =item ev_now_update (loop)
 
 Establishes the current time by querying the kernel, updating the time
@@ -982,9 +991,15 @@ plain C<ev_now_update>.
 
 =item ev_tstamp ev_clock_now ()
 
-qev. The monotonic clock the loop's timers run on -- C<CLOCK_MONOTONIC>,
-C<QueryPerformanceCounter> on Windows -- as C<ev_run> itself reads it: the
-sample C<ev_now_set> takes, and the scale C<ev_timer_next> answers on.
+qev. The monotonic clock the loop's timers run on -- C<EV_MONOTONIC_CLOCK>:
+C<CLOCK_MONOTONIC>, C<CLOCK_MONOTONIC_RAW> on Apple, C<QueryPerformanceCounter>
+on Windows, on each the clock C<std::chrono::steady_clock> reads (with libc++
+on Apple) -- as C<ev_run> itself reads it: the sample C<ev_now_set> takes, and
+the scale C<ev_timer_next> answers on. A build without a monotonic clock
+(C<EV_USE_MONOTONIC> 0) reads the realtime clock instead. On Apple,
+C<CLOCK_MONOTONIC> is the wall clock less the boot time, in microsecond steps
+and corrected along with the wall clock, so a timer judged on it could end
+before its delay measured on C<steady_clock> (Huly QB-1181).
 Before the first loop exists the monotonic probe has not run and this reads
 the realtime clock, as C<ev_run> would then.
 
@@ -4843,6 +4858,22 @@ you usually have to link against librt or something similar. Enabling it
 when the functionality isn't available is safe, though, although you have
 to make sure you link against any libraries where the C<clock_gettime>
 function is hiding in (often F<-lrt>). See also C<EV_USE_CLOCK_SYSCALL>.
+
+=item EV_MONOTONIC_CLOCK
+
+qev. The clock id C<get_clock> hands C<clock_gettime> for the monotonic
+clock: C<CLOCK_MONOTONIC_RAW> on Apple (id 4 when a strict
+C<_POSIX_C_SOURCE> hides the name), C<CLOCK_MONOTONIC> elsewhere -- the clock
+C<std::chrono::steady_clock> reads, so a C++ program's waits measured on it
+never end before their delay (Huly QB-1181). Define it, where F<ev.c> is
+compiled, to the clock your C<steady_clock> reads if that is another one
+(libstdc++ on macOS reads C<CLOCK_MONOTONIC>): with CMake,
+C<-DCMAKE_C_FLAGS=-DEV_MONOTONIC_CLOCK=CLOCK_MONOTONIC>, which the test
+suite then checks the loop against. On Linux the io_uring backend creates its deadline
+timerfd on it, so it must be a clock C<timerfd_create> accepts there.
+Windows ignores it: its monotonic clock is C<QueryPerformanceCounter>. A
+clock the system refuses fails the monotonic probe of every loop, and the
+loop then runs on the realtime clock, as without a monotonic clock.
 
 =item EV_USE_REALTIME
 

@@ -1400,6 +1400,51 @@ static void test_clock_resolution(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- the loop's clock is the one std::chrono::steady_clock reads (Huly QB-1181) ---- */
+/* A timer runs on the loop's clock and a C++ embedder measures its waits on steady_clock, so a
+ * wait armed for d ends no earlier than d on steady_clock only if they are ONE clock. On Apple
+ * they were not: CLOCK_MONOTONIC there is the wall clock less the boot time -- microsecond steps,
+ * slewed by every correction timed makes -- while libc++'s steady_clock reads CLOCK_MONOTONIC_RAW;
+ * the loop read 8.3 s ahead of it, ran 16.6 ppm fast after a correction, and a qb wait of 50 ms
+ * measured 27 us short. One clock: a reading of ev_clock_now() lies between two readings of the
+ * clock steady_clock reads -- CLOCK_MONOTONIC_RAW on Apple, CLOCK_MONOTONIC on the other POSIX
+ * systems, QueryPerformanceCounter on Windows, or the EV_MONOTONIC_CLOCK a build defines for both
+ * -- to the rounding of the conversion. */
+static ev_tstamp steady_seconds(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER        c;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    return (ev_tstamp) c.QuadPart / (ev_tstamp) freq.QuadPart;
+#else
+    struct timespec ts = { 0, 0 };
+# if defined(EV_MONOTONIC_CLOCK)
+    const clockid_t id = EV_MONOTONIC_CLOCK; /* the build chose the clock for its steady_clock (docs/ev.pod) */
+# elif defined(__APPLE__)
+    const clockid_t id = CLOCK_MONOTONIC_RAW;
+# else
+    const clockid_t id = CLOCK_MONOTONIC;
+# endif
+    if (clock_gettime(id, &ts) != 0)
+        return -1.; /* a clock the system refuses: no reading lies in [-1, -1] */
+    return (ev_tstamp) ts.tv_sec + (ev_tstamp) ts.tv_nsec * 1e-9;
+#endif
+}
+static void test_clock_source(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO); /* the monotonic probe runs with the first loop */
+    ev_tstamp worst = 0.;
+    int i, outside = 0;
+    for (i = 0; i < 1000; ++i) {
+        ev_tstamp s0 = steady_seconds(), c = ev_clock_now(), s1 = steady_seconds();
+        ev_tstamp off = c < s0 ? s0 - c : c > s1 ? c - s1 : 0.;
+        if (off > 1e-7) { ++outside; if (off > worst) worst = off; }
+    }
+    if (outside) printf("  (ev_clock_now fell outside the bracket %d times in 1000, by up to %.3f us)\n", outside, worst * 1e6);
+    OK(outside == 0, "ev_clock_now reads the clock steady_clock reads: every reading lies between two of it");
+    ev_loop_destroy(l);
+}
+
 #ifndef _WIN32
 /* ---- a real fork(): the child re-arms with ev_loop_fork and its loop works ---- */
 static int postfork_hit;
@@ -1454,6 +1499,7 @@ int main(void) {
     test_nowait_signal();
     test_nowait_clock();
     test_clock_resolution();
+    test_clock_source();
     test_nopoll();
     test_now_set();
     test_now_set_periodic();
@@ -1491,7 +1537,7 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Fifty-eight checks are unconditional in every profile on every platform (only the
+    /* Fifty-nine checks are unconditional in every profile on every platform (only the
        cross-thread cases -- the concurrent loop creation and the async senders, which skip when
        a thread cannot be created --, the fork case, the signal half of the NOWAIT cases, the pipe
        halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
@@ -1500,8 +1546,8 @@ int main(void) {
        can legitimately skip, and the backend probe skips only where every backend exists,
        which no platform has). A run below that floor measured nothing and must not read as a
        pass. */
-    if (g_run < 58) {
-        printf("== FAIL: only %d checks ran; at least 58 are unconditional ==\n", g_run);
+    if (g_run < 59) {
+        printf("== FAIL: only %d checks ran; at least 59 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

@@ -20,6 +20,45 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   foreign `ev_loop_new`. A standalone build's `ev_config.h` says it keeps libev's own names, and its archive
   exports exactly what it did.
 
+- **`ev_clock_now()` reads `CLOCK_MONOTONIC_RAW` on Apple, and `EV_MONOTONIC_CLOCK` names the clock (Huly QB-1181).**
+  The loop's monotonic clock on Apple is the one `std::chrono::steady_clock` reads with libc++ (see Fixed). An embedder
+  that hands `ev_now_set` a sample must take it from `ev_clock_now()`, as the manual always said: a `CLOCK_MONOTONIC`
+  reading is now seconds ahead of the loop (8.34 s on the M4 measured), and every timer due within that would fire at
+  once. `EV_MONOTONIC_CLOCK` can be defined, where `ev.c` is compiled, to another clock id for a program whose
+  `steady_clock` reads one -- libstdc++ on macOS reads `CLOCK_MONOTONIC`:
+  `-DCMAKE_C_FLAGS=-DEV_MONOTONIC_CLOCK=CLOCK_MONOTONIC`, and `test_clock_source` then checks the loop against that
+  clock; on Linux it must be a clock `timerfd_create` accepts. `ev_now()`, wall-clock time read every half second and
+  advanced on the monotonic clock in between, now drifts from the wall clock on Apple by the rate of the correction
+  under way, and the next read moves it back or forward by up to half a second times that rate (8.3 µs at 16.6 ppm, 270
+  µs or more at the 540 ppm or more the +27.65 ms correction ran at), as it has on Windows since 5.1.0: it is not
+  monotonic, and `docs/ev.pod` says so. An `EV_MONOTONIC_CLOCK` the system refuses leaves the loop on the realtime
+  clock, as a system without a monotonic clock does.
+
+### Fixed
+
+- **On Apple the loop's timers run on `CLOCK_MONOTONIC_RAW`, the clock `std::chrono::steady_clock` reads, so a timer no
+  longer ends before its delay measured on it (Huly QB-1181).** `get_clock` read `CLOCK_MONOTONIC`, which on Apple is
+  the wall clock less the boot time: it steps by the microsecond (`clock_getres` 1000 ns) and runs fast or slow with
+  every frequency or phase correction `timed` makes to the wall clock. Measured on an M4: 8.34 s ahead of
+  `CLOCK_MONOTONIC_RAW`, +0.4 ppm at rest and +16.6 ppm from the frequency `timed` set at one correction. A timer fires
+  once the loop's clock has advanced its delay, so an embedder that measures its waits on `steady_clock` -- libc++ reads
+  `CLOCK_MONOTONIC_RAW` -- saw them end early while the wall clock was slewed forward: qb's lower-bound tests missed by
+  up to 27 µs on 50 ms during a +27.65 ms correction, and during the 16.6 ppm one each 100 ms timer lasted 1.6-1.8 µs
+  less on `steady_clock` than on the loop's clock (19 ns at most after). `get_clock` and the monotonic probe of
+  `loop_init` now read `EV_MONOTONIC_CLOCK`: `CLOCK_MONOTONIC_RAW` on Apple -- id 4 when a strict `_POSIX_C_SOURCE`
+  hides the name, rather than falling back to the corrected clock in silence --, `CLOCK_MONOTONIC` everywhere else, and
+  the io_uring backend's deadline timerfd, armed absolute on the loop's time, is created on the same clock; Windows
+  keeps `QueryPerformanceCounter`. It is the cheaper read on Apple too, 14.2 ns against 16.3, and `ev_now_set` now takes
+  the later of its sample and the loop's time without a branch: with a clock whose tick is about one pass long (41.7 ns
+  here, against a ~24 ns pass), "is it later" was a coin toss the predictor lost, 1.5 ns a pass. `bench/bench-pass.c`,
+  control against candidate on an M4 (3 copies a side, 12 rounds, seeded order, quiet host; A/A at most 2.8 %): `empty`
+  24.80 -> 23.30 ns, `timer` 25.30 -> 23.70, `now` 20.25 -> 16.10, `arm+now` 23.10 -> 19.30, `timer+set` 24.80 -> 24.40
+  (no measurable difference; +6.0 % with the branch), `timer+set0` 10.80 -> 9.90, `gate` level. A timer across a system
+  sleep behaves as before: both clocks count the sleep. `ev_clock_now` returns the new clock; `docs/ev.pod` says so.
+  Test `test_clock_source` (`tests/test-loops.c`: 1000 readings of `ev_clock_now()`, each between two readings of the
+  clock `steady_clock` reads on the platform; unconditional floor 58 -> 59), red with the old clock on macOS by 8.34 s
+  and with `CLOCK_UPTIME_RAW` by the host's 700 238 s of sleep.
+
 ## [5.2.0] — 2026-10-25
 
 ### Changed

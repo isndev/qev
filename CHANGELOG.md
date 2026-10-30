@@ -61,7 +61,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   launches). `bench/bench-pass.c` with the branchless form, control against candidate on an M4 (3
   copies a side, 12 rounds, seeded order, quiet host; A/A at most 2.8 %): `empty` 24.80 -> 23.30 ns, `timer` 25.30 ->
   23.70, `now` 20.25 -> 16.10, `arm+now` 23.10 -> 19.30, `timer+set` 24.80 -> 24.40 (no measurable difference; +6.0 %
-  with `>`), `timer+set0` 10.80 -> 9.90, `gate` level; the `>=` form is to be read on the M4. A timer across a system
+  with `>`), `timer+set0` 10.80 -> 9.90, `gate` level. Read on the M4 (Apple clang 21, the same protocol, 10 rounds,
+  A/A at most 3.0 %), `>=` holds once the comparison carries no `ecb_expect`: with the hint, Apple clang's cold-code
+  splitting moved the whole monotonic path into an outlined call (`ev_now_set.cold.1`, a call and two frames a pass),
+  `timer+set0` 9.90 -> 11.00 ns against the branchless form (+11 %, CI [1.095, 1.131]); without it the comparison is
+  inline (`fcmp; b.lt` and the store, as x86's `comisd; jb`), `timer+set` 25.00 -> 24.55 ns (-1.8 %), `timer+set0`
+  9.90 -> 9.95 (level), every other shape level, and `>` at the same clock reads 26.80 (+7.2 %, the coin toss, in the
+  same session). MSVC compiles the same code either way (`ecb_expect` is empty there). A timer across a system
   sleep behaves as before: both clocks count the sleep. `ev_clock_now` returns the new clock; `docs/ev.pod` says so.
   Test `test_clock_source` (`tests/test-loops.c`: 1000 readings of `ev_clock_now()`, each between two readings of the
   clock `steady_clock` reads on the platform; unconditional floor 58 -> 59), red with the old clock on macOS by 8.34 s

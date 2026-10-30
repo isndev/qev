@@ -48,12 +48,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   `loop_init` now read `EV_MONOTONIC_CLOCK`: `CLOCK_MONOTONIC_RAW` on Apple -- id 4 when a strict `_POSIX_C_SOURCE`
   hides the name, rather than falling back to the corrected clock in silence --, `CLOCK_MONOTONIC` everywhere else, and
   the io_uring backend's deadline timerfd, armed absolute on the loop's time, is created on the same clock; Windows
-  keeps `QueryPerformanceCounter`. It is the cheaper read on Apple too, 14.2 ns against 16.3, and `ev_now_set` now takes
-  the later of its sample and the loop's time without a branch: with a clock whose tick is about one pass long (41.7 ns
-  here, against a ~24 ns pass), "is it later" was a coin toss the predictor lost, 1.5 ns a pass. `bench/bench-pass.c`,
-  control against candidate on an M4 (3 copies a side, 12 rounds, seeded order, quiet host; A/A at most 2.8 %): `empty`
-  24.80 -> 23.30 ns, `timer` 25.30 -> 23.70, `now` 20.25 -> 16.10, `arm+now` 23.10 -> 19.30, `timer+set` 24.80 -> 24.40
-  (no measurable difference; +6.0 % with the branch), `timer+set0` 10.80 -> 9.90, `gate` level. A timer across a system
+  keeps `QueryPerformanceCounter`. It is the cheaper read on Apple too, 14.2 ns against 16.3, and `ev_now_set` compares
+  its sample to the loop's time with `>=`, not `>`: with a clock whose tick is about one pass long (41.7 ns here,
+  against a ~24 ns pass) the same reading comes back several passes in a row, and "is it later" was a coin toss the
+  predictor lost, 1.5 ns a pass; `>=` sends an equal reading the way a later one goes, so the branch is taken on every
+  pass unless the clock steps back, on every architecture, and the loop's clock still never steps back. The first form
+  of this fix took the later of the two without a branch (`mono > mn_now ? mono : mn_now`), which on x86 put a load and a
+  4-cycle `maxsd` on the dependency chain of everything after it, where the branch was never missed: `timer+set` 21.3 ->
+  22.4 ns and `timer+set0` 8.9 -> 10.4 on an i9-12900K under g++ 14 (3 copies a side, 8 rounds, seeded order, A/A at most
+  1.9 %); with `>=` both read what they read before this change, `timer+set` 21.3 -> 21.3 ns and `timer+set0` 9.0 -> 9.0,
+  ratios 1.000 with CIs [0.988, 1.007] and [0.973, 1.023], and every other shape level (the same host, 4 sides, 96
+  launches). `bench/bench-pass.c` with the branchless form, control against candidate on an M4 (3
+  copies a side, 12 rounds, seeded order, quiet host; A/A at most 2.8 %): `empty` 24.80 -> 23.30 ns, `timer` 25.30 ->
+  23.70, `now` 20.25 -> 16.10, `arm+now` 23.10 -> 19.30, `timer+set` 24.80 -> 24.40 (no measurable difference; +6.0 %
+  with `>`), `timer+set0` 10.80 -> 9.90, `gate` level; the `>=` form is to be read on the M4. A timer across a system
   sleep behaves as before: both clocks count the sleep. `ev_clock_now` returns the new clock; `docs/ev.pod` says so.
   Test `test_clock_source` (`tests/test-loops.c`: 1000 readings of `ev_clock_now()`, each between two readings of the
   clock `steady_clock` reads on the platform; unconditional floor 58 -> 59), red with the old clock on macOS by 8.34 s

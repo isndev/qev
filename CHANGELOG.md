@@ -67,7 +67,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   `timer+set0` 9.90 -> 11.00 ns against the branchless form (+11 %, CI [1.095, 1.131]); without it the comparison is
   inline (`fcmp; b.lt` and the store, as x86's `comisd; jb`), `timer+set` 25.00 -> 24.55 ns (-1.8 %), `timer+set0`
   9.90 -> 9.95 (level), every other shape level, and `>` at the same clock reads 26.80 (+7.2 %, the coin toss, in the
-  same session). MSVC compiles the same code either way (`ecb_expect` is empty there). A timer across a system
+  same session). MSVC compiles the same code either way (`ecb_expect` is empty there). Re-read on x86 under g++ 14
+  (an i9-12900K, `bench-pass` at 3cf924c, 25f4d97, 8d47145 and this form, 3 physical copies a side, 8 rounds in a
+  seeded order, A/A at most 1.7 %), the hint is what keeps the common store as the fall-through there: without it g++
+  lays the keep case out as the fall-through and the store as an out-of-line block, a taken jump there and a taken jump
+  back on every pass, `timer+set0` 8.80 -> 9.75 ns (+10.8 %, CI [1.090, 1.137]), `timer+set` level behind its clock
+  read. So the compare carries `ecb_expect_true` everywhere but Apple clang (`defined(__clang__) && defined(__APPLE__)`,
+  where the line is 8d47145's): `timer+set0` 8.80 ns again (1.000 [0.989, 1.029]), every other shape level; clang 19 on
+  Linux compiles the two forms to the same bytes, MSVC 19.51 to the same 33 instructions. A timer across a system
   sleep behaves as before: both clocks count the sleep. `ev_clock_now` returns the new clock; `docs/ev.pod` says so.
   Test `test_clock_source` (`tests/test-loops.c`: 1000 readings of `ev_clock_now()`, each between two readings of the
   clock `steady_clock` reads on the platform; unconditional floor 58 -> 59), red with the old clock on macOS by 8.34 s

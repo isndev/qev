@@ -1274,7 +1274,12 @@ which turns readable when the wall clock is set -- a pass learns of that by
 reading the wall clock again half a second (C<MIN_TIMEJUMP / 2>) after its
 last read, a moment C<ev_timer_next> names, and a blocking run still polls
 it. Counted, it made every loop that had ever started a periodic poll on
-every non-blocking pass (Huly QB-1277). When this is
+every non-blocking pass (Huly QB-1277). The inotify descriptor behind
+C<ev_stat> counts while a path is watched through it, as the signalfd does
+and for the same reason, and no longer once the last watch is gone: it used
+to count for the life of the loop. The linux aio backend's own epoll
+descriptor never counts: the descriptors in it are counted on their own
+account. When this is
 zero, an C<ev_run> that would not block anyway (C<EVRUN_NOWAIT>, or an
 expired timer) skips the backend poll altogether; a blocking run still
 polls, because with no fd the poll is the sleep.

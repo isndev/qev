@@ -62,6 +62,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   callback; a NOWAIT pass made at the read `ev_timer_next` names, the wall clock moved 10 s, reschedules the periodics
   with no poll. Twelve checks, six red on the base.
 
+- **The inotify fd's watcher runs while a path is watched and stops with the last watch, and the linux aio backend's own
+  epoll watcher no longer counts in `ev_io_count` (Huly QB-1277).** `infy_init` started the watcher of the inotify fd
+  at the first `ev_stat_start` and nothing stopped it: after the last `ev_stat` stopped it still counted in `iocnt`, and
+  a loop that had once watched a path made a backend poll on every NOWAIT pass for the rest of its life. `infy_sync`
+  starts it when `fs_hash` gains its first watch and stops it when the last goes -- after a start, a stop, a callback's
+  re-add, a read of the fd and a fork, never between a del and its add, so a watcher re-armed in place does not stop
+  and restart it -- keeping the `ev_unref` that leaves it out of the loop's liveness. An event still queued for a
+  removed watch is read when the watcher starts again and matches no `ev_stat`. It still counts while a path is
+  watched: a change on a local filesystem reaches the loop through that fd alone. `linuxaio_epoll_w`, the backend's
+  `ev_io` on its own epoll set -- which holds only descriptors aio refused, each counted, or not, on its own account --
+  is named in `io_is_loop_own`, as io_uring's deadline timerfd is. White-box cases in `tests/test-linux-internals.c`,
+  which now forces the linux aio backend on beside the timerfd: nine on the inotify watcher (counted and delivering
+  while a file is watched; stopped, uncounted and making no poll beside a far timer after the last stop; the referenced
+  count balanced; the queued events of a removed watch calling nobody when the next watch restarts it, which then
+  delivers; `infy_fork` with a watch and without one), three of them red on the base; three on linux aio (a fresh loop
+  counts nothing, a hundred NOWAIT passes beside a far timer make no poll, a quiet pipe counts 1 and delivers), all three
+  red on the base. 24 checks, 12 red on a79c5fa9.
+
 - **On Apple the loop's timers run on `CLOCK_MONOTONIC_RAW`, the clock `std::chrono::steady_clock` reads, so a timer no
   longer ends before its delay measured on it (Huly QB-1181).** `get_clock` read `CLOCK_MONOTONIC`, which on Apple is
   the wall clock less the boot time: it steps by the microsecond (`clock_getres` 1000 ns) and runs fast or slow with

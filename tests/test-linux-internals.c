@@ -16,18 +16,25 @@
  * loop's recorded realtime-monotonic offset, which is what a jump changes. The same compile shows
  * that the timerfd is the loop's own and not an fd a non-blocking pass polls for (Huly QB-1277),
  * through a wrapper over the loop's backend poll, and that a blocking pass is still woken by it.
+ * Two more of the loop's own fds are read the same way: the inotify fd behind ev_stat, which must
+ * be polled while a path is watched and not after the last watch went, a fork included, and the
+ * linux aio backend's own epoll fd, which is no fd a poll is for (both Huly QB-1277).
  *
  * Registered by CMake only on Linux with <sys/timerfd.h>.
  */
 #ifdef __linux__
 
-/* the configuration the qev target compiles ev.c with, then the timerfd forced on */
+/* the configuration the qev target compiles ev.c with, then the timerfd and the linux aio backend
+   forced on (ev.c turns the backend off again without <linux/aio_abi.h> or io_getevents) */
 #include QB_EV_CONFIG_H
 #undef EV_USE_TIMERFD
 #define EV_USE_TIMERFD 1
+#undef EV_USE_LINUXAIO
+#define EV_USE_LINUXAIO 1
 #include "../ev.c"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 static int g_fail = 0, g_run = 0, g_skip = 0;
@@ -221,8 +228,188 @@ static int nowait_pass_sees_jump(int *due, int *polled, int *next) {
     return calls;
 }
 
+/* ---- the inotify fd is polled while a path is watched, and not after the last watch (Huly QB-1277) ----
+   The first ev_stat creates the loop's inotify fd, and it lives as long as the loop. Its watcher was
+   started then for good: after the last ev_stat stopped it still counted in ev_io_count, and every
+   NOWAIT pass of a loop holding anything else polled. It must run while a watch exists -- a change of
+   a path on a local filesystem reaches the loop through that fd alone (the stat timer is off there) --
+   so it is started with the first watch and stopped with the last (infy_sync). The watchers watch two
+   files of their own under /tmp; *a and *b count the callbacks of each. */
+#if EV_USE_INOTIFY && EV_STAT_ENABLE
+static int  st_a, st_b;
+static void st_cb_a(struct ev_loop *l, ev_stat *w, int r) { (void) l; (void) w; (void) r; ++st_a; }
+static void st_cb_b(struct ev_loop *l, ev_stat *w, int r) { (void) l; (void) w; (void) r; ++st_b; }
+static int  mk_file(char *path) {
+    int fd = mkstemp(path), ok;
+    if (fd < 0)
+        return -1;
+    ok = write(fd, "a", 1) == 1;
+    close(fd);
+    return ok ? 0 : -1;
+}
+static void append(const char *path) {
+    FILE *f = fopen(path, "a");
+    if (f) {
+        fputs("b", f);
+        fclose(f);
+    }
+}
+static int infy_on(struct ev_loop *l) { return ev_is_active(&l->fs_w) && ev_io_count(l) == 1; }
+static int infy_off(struct ev_loop *l) { return !ev_is_active(&l->fs_w) && ev_io_count(l) == 0; }
+#endif
+#if (EV_USE_INOTIFY && EV_STAT_ENABLE) || EV_USE_LINUXAIO
+/* NOWAIT passes until *hits moves or two seconds went by; returns whether it moved */
+static int pump_until(struct ev_loop *l, int *hits) {
+    int       before = *hits;
+    ev_tstamp t0     = ev_time();
+    while (*hits == before && ev_time() - t0 < 2.)
+        ev_run(l, EVRUN_NOWAIT);
+    return *hits != before;
+}
+#endif
+
+struct infy_result {
+    int ran;          /* 0: no inotify on this host (skip) */
+    int watched;      /* one ev_stat: the watcher runs and counts */
+    int delivered;    /* a change of the file reached its callback through NOWAIT passes */
+    int stopped;      /* the ev_stat stopped: the watcher stopped, no count */
+    int no_poll;      /* and a hundred NOWAIT passes beside a far timer made no poll */
+    int balanced;     /* the referenced active count is what it was before the first start */
+    int stale_quiet;  /* events queued for a removed watch, read when the watcher restarts, call nobody */
+    int restarted;    /* the second ev_stat restarted the watcher, and its own change is delivered */
+    int fork_kept;    /* infy_fork with a watch: a new fd, the watcher running, a change delivered */
+    int fork_idle;    /* infy_fork with no watch: the watcher stays stopped, the count balanced */
+};
+
+static struct infy_result infy_lifecycle(void) {
+    struct infy_result res = {0};
+#if EV_USE_INOTIFY && EV_STAT_ENABLE
+    char               pa[] = "/tmp/qev-qb1277-a-XXXXXX", pb[] = "/tmp/qev-qb1277-b-XXXXXX";
+    struct ev_loop    *l    = ev_loop_new(EVFLAG_AUTO);
+    ev_stat            a, b;
+    ev_timer           far_off;
+    int                active0, n;
+    if (mk_file(pa) < 0 || mk_file(pb) < 0) {
+        ev_loop_destroy(l);
+        return res;
+    }
+    active0 = *ev_active_count_addr(l);
+    ev_stat_init(&a, st_cb_a, pa, 0.);
+    ev_stat_start(l, &a);
+    if (l->fs_fd < 0) { /* inotify refused: the stat watcher polls, nothing to measure */
+        ev_stat_stop(l, &a);
+        ev_loop_destroy(l);
+        unlink(pa);
+        unlink(pb);
+        return res;
+    }
+    res.ran = 1;
+    res.watched = infy_on(l);
+    append(pa);
+    res.delivered = pump_until(l, &st_a);
+    ev_stat_stop(l, &a);
+    res.stopped = infy_off(l);
+    ev_timer_init(&far_off, guard_cb, 3600., 0.);
+    ev_timer_start(l, &far_off);
+    count_polls(l);
+    for (n = 0; n < 100; ++n)
+        ev_run(l, EVRUN_NOWAIT);
+    res.no_poll        = polls == 0;
+    l->backend_poll    = real_poll;
+    res.balanced       = *ev_active_count_addr(l) == active0 + 1; /* + the far timer */
+
+    /* a change queued for a, then a stopped before any pass read it: its events, and the IN_IGNORED of
+       its removed watch, wait in the fd while the watcher is stopped and are read when b restarts it */
+    ev_stat_start(l, &a);
+    append(pa);
+    ev_stat_stop(l, &a);
+    st_a = st_b = 0;
+    ev_stat_init(&b, st_cb_b, pb, 0.);
+    ev_stat_start(l, &b);
+    for (n = 0; n < 50; ++n)
+        ev_run(l, EVRUN_NOWAIT);
+    res.stale_quiet = st_a == 0 && st_b == 0;
+    res.restarted   = infy_on(l);
+    append(pb);
+    res.restarted = res.restarted && pump_until(l, &st_b);
+
+    infy_fork(l);
+    res.fork_kept = l->fs_fd >= 0 && infy_on(l);
+    append(pb);
+    res.fork_kept = res.fork_kept && pump_until(l, &st_b);
+    ev_stat_stop(l, &b);
+    infy_fork(l);
+    res.fork_idle = l->fs_fd >= 0 && infy_off(l) && *ev_active_count_addr(l) == active0 + 1;
+
+    ev_timer_stop(l, &far_off);
+    ev_loop_destroy(l);
+    unlink(pa);
+    unlink(pb);
+#endif
+    return res;
+}
+
+/* ---- the linux aio backend's own epoll fd is no fd a poll is for (Huly QB-1277) ----
+   The backend watches its own epoll set -- the fds aio refuses -- through an ev_io started at loop_init,
+   and that ev_io counted: a linux aio loop with nothing but a far timer polled on every NOWAIT pass. The
+   fds in that set are the embedder's ev_io watchers, which count for themselves. Returns -1 when the
+   kernel offers no linux aio; else *count gets ev_io_count on the fresh loop, *polls_far the polls of a
+   hundred NOWAIT passes beside a far timer, *piped whether a quiet pipe then counts 1 and a byte on it
+   reaches its callback through NOWAIT passes. */
+#if EV_USE_LINUXAIO
+static int  aio_hits;
+static void aio_cb(struct ev_loop *l, ev_io *w, int r) {
+    char    c;
+    ssize_t got = read(w->fd, &c, 1); /* the byte the pump wrote */
+    (void) l;
+    (void) r;
+    (void) got;
+    ++aio_hits;
+}
+#endif
+static int aio_own_fd(unsigned *count, int *polls_far, int *piped) {
+#if EV_USE_LINUXAIO
+    struct ev_loop *l = ev_loop_new(EVBACKEND_LINUXAIO);
+    ev_timer        far_off;
+    ev_io           w;
+    int             fds[2], n;
+    if (!l)
+        return -1;
+    if (ev_backend(l) != EVBACKEND_LINUXAIO) {
+        ev_loop_destroy(l);
+        return -1;
+    }
+    *count = ev_io_count(l);
+    ev_timer_init(&far_off, guard_cb, 3600., 0.);
+    ev_timer_start(l, &far_off);
+    count_polls(l);
+    for (n = 0; n < 100; ++n)
+        ev_run(l, EVRUN_NOWAIT);
+    *polls_far      = polls;
+    l->backend_poll = real_poll;
+    *piped          = 0;
+    if (pipe(fds) == 0) {
+        ev_io_init(&w, aio_cb, fds[0], EV_READ);
+        ev_io_start(l, &w);
+        aio_hits = 0;
+        *piped   = ev_io_count(l) == 1 && write(fds[1], "x", 1) == 1 && pump_until(l, &aio_hits);
+        ev_io_stop(l, &w);
+        close(fds[0]);
+        close(fds[1]);
+    }
+    ev_timer_stop(l, &far_off);
+    ev_loop_destroy(l);
+    return 0;
+#else
+    (void) count;
+    (void) polls_far;
+    (void) piped;
+    return -1;
+#endif
+}
+
 int main(void) {
-    int r;
+    int r, expected;
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("qev Linux internals (white-box, ev %d.%d, timerfd forced on)\n", ev_version_major(), ev_version_minor());
 
@@ -256,12 +443,45 @@ int main(void) {
             OK(next, "and the next read is half a second on");
         }
     }
+    expected = g_skip ? g_run : 12;
+
+    {
+        struct infy_result ir = infy_lifecycle();
+        if (!ir.ran)
+            SKIP("the inotify fd's watcher", "inotify refused on this host: ev_stat polls, nothing to measure");
+        else {
+            expected += 9;
+            OK(ir.watched, "an ev_stat on a local file: the inotify fd's watcher runs and counts in ev_io_count");
+            OK(ir.delivered, "and a change of the file reaches its callback through NOWAIT passes, by that fd alone");
+            OK(ir.stopped, "the last ev_stat stopped: the watcher is stopped and ev_io_count reads 0 (QB-1277: 1, for the life of the loop)");
+            OK(ir.no_poll, "a hundred NOWAIT passes beside a far timer then make no backend poll (QB-1277: one each)");
+            OK(ir.balanced, "start and stop keep the referenced count where it was: the watcher never keeps the loop alive");
+            OK(ir.stale_quiet, "events queued for a removed watch, read when the next ev_stat restarts the watcher, call nobody");
+            OK(ir.restarted, "the next ev_stat restarts the watcher, and its own change is delivered");
+            OK(ir.fork_kept, "infy_fork with a watch: a new fd, the watcher running, a change still delivered");
+            OK(ir.fork_idle, "infy_fork with no watch left: the watcher stays stopped, the count balanced");
+        }
+    }
+
+    {
+        unsigned count = 9;
+        int      polls_far = -1, piped = 0;
+        if (aio_own_fd(&count, &polls_far, &piped) < 0)
+            SKIP("linux aio's own epoll fd", "no linux aio backend: not compiled in, or the kernel refuses io_setup");
+        else {
+            expected += 3;
+            OK(count == 0, "a fresh linux aio loop counts no pollable fd: its own epoll fd's watcher is the loop's (QB-1277: 1)");
+            OK(polls_far == 0, "a hundred NOWAIT passes of a linux aio loop beside a far timer make no backend poll (QB-1277: one each)");
+            OK(piped, "a quiet pipe counts 1 there (QB-1277: 2), and a byte on it reaches its callback through NOWAIT passes");
+        }
+    }
 
     printf("\n== linux-internals: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
-    /* Twelve checks; they skip only on a kernel that refuses timerfd_create (it exists since 2.6.25).
-       A passing run below twelve measured less than it claims. */
-    if (!g_fail && !g_skip && g_run < 12) {
-        printf("== FAIL: only %d checks ran; 12 are expected ==\n", g_run);
+    /* Twelve timerfd checks, nine inotify checks, three linux aio checks; a group skips whole only where
+       the host refuses its fd (timerfd_create exists since 2.6.25, inotify since 2.6.13, linux aio's poll
+       since 4.19). A run below what the groups that ran expect measured less than it claims. */
+    if (!g_fail && g_run < expected) {
+        printf("== FAIL: only %d checks ran; %d are expected ==\n", g_run, expected);
         return 1;
     }
     return g_fail ? 1 : 0;

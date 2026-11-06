@@ -8,6 +8,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Changed
 
+- **While a periodic is active, `ev_timer_next` answers no later than the loop's next read of the wall clock, half a
+  second after its last (Huly QB-1277).** That read is how a pass sees the wall clock jump and reschedules the
+  periodics (`time_update`, `ev_now_set`); an embedder that ran the loop only when `ev_timer_next` was due never let it
+  look, and a periodic fired on the wall clock it had before the jump (see Fixed). An embedder that bounds a park with
+  `ev_timer_next` wakes once per half second while a periodic is active -- a blocking `ev_run` without a timerfd wakes
+  about once a minute for the same check -- and a loop without a monotonic clock, where every pass reads the wall
+  clock, names no such read: `loop_init` starts its `now_floor` beyond any reading, so `ev_timer_next` tests no clock
+  flag on the passes that ask it. Without a periodic the answer is what it was. `docs/ev.pod` says so; the new
+  `test_timer_next_wall_read` (`tests/test-loops.c`, unconditional floor 59 -> 63) is red on the base.
+
 - **Embedded, the library links under its embedder's names; standalone, nothing changes (Huly QB-1139).**
   Built through `add_subdirectory` with `QB_EV_EMBED_INCLUDE_DIR` set -- the way qb builds it -- every function
   and variable the library exports links as `qb_` + its libev name (`qb_ev_run`), and wepoll's five functions
@@ -35,6 +45,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   clock, as a system without a monotonic clock does.
 
 ### Fixed
+
+- **The realtime timerfd behind periodics no longer counts in `ev_io_count`: a loop that has held a periodic stops
+  polling the backend on every non-blocking pass (Huly QB-1277).** `EV_USE_TIMERFD` (off by default,
+  `QB_EV_USE_TIMERFD`) creates the timerfd at the first `ev_periodic_start` and keeps it until `ev_loop_destroy`; as an
+  `ev_io` it counted in `iocnt`, so `ev_run`'s rule that a pass which would not block makes no poll without an fd
+  (QB-187) never applied again, and an embedder that reads `ev_io_count_addr` before it polls -- qb's listener --
+  polled and ran the loop on every pass, the periodic long stopped. `io_is_loop_own` now names it beside the wake pipe
+  and io_uring's deadline timerfd. A non-blocking pass learns of a step of the wall clock without it, reading the wall
+  clock again half a second after its last read and rescheduling the periodics on a jump, a read `ev_timer_next` now
+  names (see Changed); a blocking run polls it as before, which is what lets it sleep `MAX_BLOCKTIME2`. The signalfd
+  still counts: what it carries arrives on that fd alone. White-box cases in `tests/test-linux-internals.c`, the
+  timerfd forced on and the backend poll counted through a wrapper over the loop's: the count reads 0, and a hundred
+  NOWAIT passes over a far periodic make no poll, stopped or not (one each on the base); beside a quiet pipe every pass
+  still polls and the pipe alone counts; a blocking pass is still woken by the timerfd turning readable and runs its
+  callback; a NOWAIT pass made at the read `ev_timer_next` names, the wall clock moved 10 s, reschedules the periodics
+  with no poll. Twelve checks, six red on the base.
 
 - **On Apple the loop's timers run on `CLOCK_MONOTONIC_RAW`, the clock `std::chrono::steady_clock` reads, so a timer no
   longer ends before its delay measured on it (Huly QB-1181).** `get_clock` read `CLOCK_MONOTONIC`, which on Apple is

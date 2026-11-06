@@ -253,7 +253,7 @@ by `EV_FEATURE_API` (on in every default build) and documented in [`docs/ev.pod`
 | `ev_now_set(loop, mono)` and `ev_clock_now()` | an embedder that already read the clock hands it to the loop; a pass that was given one does not read it again |
 | `ev_active_count(loop)`, `ev_active_count_addr(loop)`, `ev_pending_count_addr(loop)` | is there anything for the loop to do — readable without a call, from the scheduler's own pass |
 | `ev_io_count(loop)`, `ev_io_count_addr(loop)`, `ev_io_fed_addr(loop)` | how many pollable fds the loop owns, and whether the last poll delivered anything |
-| `ev_timer_count_addr(loop)`, `ev_periodic_count_addr(loop)`, `ev_timer_next(loop)` | how many timers and periodics are armed and when the earliest is due, so a park can be bounded without a timer of its own |
+| `ev_timer_count_addr(loop)`, `ev_periodic_count_addr(loop)`, `ev_timer_next(loop)` | how many timers and periodics are armed and when the earliest is due -- with a periodic, no later than the loop's next read of the wall clock --, so a park can be bounded without a timer of its own |
 | `ev_wake_pending_addr(loop)` | whether an `ev_async_send` from another thread is waiting to be seen |
 | `EVRUN_NOPOLL` | a pass that dispatches what is pending and skips the backend poll |
 | `EV_NUMPRI` | the number of priority levels, as a constant |

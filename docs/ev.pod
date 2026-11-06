@@ -1266,10 +1266,15 @@ backend poll would only cost its syscall.
 =item unsigned int ev_io_count (loop)
 
 Returns the number of active C<ev_io> watchers, i.e. what the backend
-poll has to look at. The loop's own internal watchers on real file
-descriptors count (the timerfd behind periodics, the signalfd); the pipe
-behind signal and async watchers does not, because what it carries reaches
-the loop through flags a non-blocking pass reads directly. When this is
+poll has to look at. The signalfd counts, because what it carries reaches
+the loop through that descriptor alone. The pipe behind signal and async
+watchers does not, because what it carries reaches the loop through flags
+a non-blocking pass reads directly; nor does the timerfd behind periodics,
+which turns readable when the wall clock is set -- a pass learns of that by
+reading the wall clock again half a second (C<MIN_TIMEJUMP / 2>) after its
+last read, a moment C<ev_timer_next> names, and a blocking run still polls
+it. Counted, it made every loop that had ever started a periodic poll on
+every non-blocking pass (Huly QB-1277). When this is
 zero, an C<ev_run> that would not block anyway (C<EVRUN_NOWAIT>, or an
 expired timer) skips the backend poll altogether; a blocking run still
 polls, because with no fd the poll is the sleep.
@@ -1301,7 +1306,11 @@ read inline. The second is the earliest deadline the loop holds, on the
 clock C<ev_clock_now ()> reads: the top of the timer heap, and of the
 periodic heap brought onto the monotonic scale when periodics are compiled
 in; a value no reading can reach (C<1e13> seconds or more) when it holds
-none. C<timers_reify> fires a timer only once the loop's time is strictly
+none. While a periodic is active it is no later than the loop's next read
+of the wall clock, half a second after the last: that read is how a pass
+sees the wall clock jump and reschedules the periodics, and an embedder
+that ran the loop only for the deadlines of its watchers never let it look
+(Huly QB-1277). C<timers_reify> fires a timer only once the loop's time is strictly
 past its deadline, so a deadline before the embedder's reading is due, one
 at or after it is not -- an inclusive test runs C<ev_run> for nothing on
 the pass that reads the deadline exactly. The third is the address of the flag C<ev_async_send>

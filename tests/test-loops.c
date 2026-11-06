@@ -747,6 +747,35 @@ static void test_periodic_count(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- with a periodic, the loop's next read of the wall clock is a deadline too (Huly QB-1277) ----
+   A periodic is due on the wall clock, and the loop sees that clock jump by reading it again
+   MIN_TIMEJUMP/2 (half a second) after its last read, on a pass. An embedder that runs the loop only
+   when ev_timer_next is due never let it look -- a periodic due in an hour fired in an hour after the
+   clock was set a day ahead -- so while a periodic is active ev_timer_next names that read, and a
+   NOWAIT pass made at it moves it half a second on. A timer is on the monotonic clock: alone, it gets
+   its own deadline and nothing else. */
+static void test_timer_next_wall_read(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer        t;
+    ev_periodic     p;
+    ev_tstamp       next, t0;
+    ev_timer_init(&t, ns_cb, 3600., 0.); ev_timer_start(l, &t);
+    OK(ev_timer_next(l) > ev_clock_now() + 3000., "a far timer alone: ev_timer_next is its deadline, no read of the wall clock in it");
+    ev_now_update(l);
+    ev_periodic_init(&p, pc_cb, ev_now(l) + 3600., 0., 0); ev_periodic_start(l, &p);
+    next = ev_timer_next(l);
+    OK(next <= ev_clock_now() + 0.5, "beside a far periodic, ev_timer_next is the loop's next wall-clock read, at most half a second away (QB-1277)");
+    t0 = ev_clock_now();
+    while (ev_clock_now() <= next && ev_clock_now() - t0 < 1.0) msleep(5);
+    ev_now_set(l, ev_clock_now());               /* what an embedder hands the pass it runs for the read */
+    ev_run(l, EVRUN_NOWAIT);
+    OK(ev_timer_next(l) > ev_clock_now() + 0.4, "the NOWAIT pass made at the read moves the next one half a second on");
+    ev_periodic_stop(l, &p);
+    OK(ev_timer_next(l) > ev_clock_now() + 3000., "the periodic stopped: the timer's deadline again");
+    ev_timer_stop(l, &t);
+    ev_loop_destroy(l);
+}
+
 #if EV_ASYNC_ENABLE
 /* ---- a wake that no pass has delivered, read without the loop (QB-190) ---- */
 static int wp_hits;
@@ -1505,6 +1534,7 @@ int main(void) {
     test_now_set_periodic();
     test_timer_next();
     test_periodic_count();
+    test_timer_next_wall_read();
 #if EV_ASYNC_ENABLE
     test_wake_pending();
 #else
@@ -1537,7 +1567,7 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Fifty-nine checks are unconditional in every profile on every platform (only the
+    /* Sixty-three checks are unconditional in every profile on every platform (only the
        cross-thread cases -- the concurrent loop creation and the async senders, which skip when
        a thread cannot be created --, the fork case, the signal half of the NOWAIT cases, the pipe
        halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
@@ -1546,8 +1576,8 @@ int main(void) {
        can legitimately skip, and the backend probe skips only where every backend exists,
        which no platform has). A run below that floor measured nothing and must not read as a
        pass. */
-    if (g_run < 59) {
-        printf("== FAIL: only %d checks ran; at least 59 are unconditional ==\n", g_run);
+    if (g_run < 63) {
+        printf("== FAIL: only %d checks ran; at least 63 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

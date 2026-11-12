@@ -846,16 +846,34 @@ isn't available.
 =item ev_loop_destroy (loop)
 
 Destroys an event loop object (frees all memory and kernel state
-etc.). None of the active event watchers will be stopped in the normal
-sense, so e.g. C<ev_is_active> might still return true. It is your
-responsibility to either stop all watchers cleanly yourself I<before>
-calling this function, or cope with the fact afterwards (which is usually
-the easiest thing, you can just ignore the watchers and/or C<free ()> them
-for example).
+etc.). The cleanup watchers are invoked first, as they always were. Then
+every watcher still started on the loop, or pending in it, is
+I<detached>: it is left inactive and not pending -- the state its
+C<ev_TYPE_stop> leaves -- and no callback is invoked for it. So
+C<ev_is_active> and C<ev_is_pending> return false for it afterwards, a
+C<ev_TYPE_stop> that comes after the loop returns at once without reading
+the freed loop, and the watcher can be started again on another loop (a
+timer keeps the delay it had left). Signal and child watchers sit on
+process-wide lists: they are stopped for real, which also gives a signal
+back its default action once the loop that watched it is gone. Stopping
+your watchers yourself I<before> calling this function is still the
+cleanest order; a watcher whose owner outlives its loop -- an object with
+static storage, a thread-local destroyed later -- no longer has to.
 
-Note that certain global state, such as signal state (and installed signal
-handlers), will not be freed by this function, and related watchers (such
-as signal and child watchers) would need to be stopped manually.
+Through qev 5.2 none of the active watchers was touched: C<ev_is_active> still
+returned true, and a late stop read and wrote the freed loop.
+
+The price is one rule, B<new after qev 5.2>: the loop I<writes> to every watcher
+still started on it or pending in it when it is destroyed, so such a
+watcher B<must still be allocated at that moment>. Free it after
+C<ev_loop_destroy>, or stop it first; never free it started and then
+destroy its loop. libev did not touch the watchers there, so a program
+that freed a started watcher and then destroyed the loop without running
+it again worked by accident. Two shapes to look for: a cleanup watcher's
+callback that frees watchers which are still started (the cleanup
+watchers run first, the detach after them), and an C<atexit> handler that
+destroys the default loop after objects with static storage that own
+started watchers were destroyed without stopping them.
 
 This function is normally used on loop objects allocated by
 C<ev_loop_new>, but it can also be used on the default loop returned by

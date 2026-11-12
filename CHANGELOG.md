@@ -8,6 +8,28 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ### Changed
 
+- **`ev_loop_destroy` detaches every watcher still started on the loop or pending in it (Huly QB-1246).** Each is
+  left inactive and not pending, the state its `ev_TYPE_stop` leaves, and no callback is invoked for it; the cleanup
+  watchers still run first. `ev_is_active` and `ev_is_pending` then return false, a stop that comes after the loop
+  returns at once, and the watcher starts again on another loop -- a timer with the delay it had left. Signal and
+  child watchers, which sit on process-wide lists, are stopped for real: a signal the loop watched is back to its
+  default action. Until now none was touched, and a late stop -- the destructor of an object with static storage, of
+  a thread-local destroyed after the loop, of a coroutine frame freed late -- read and wrote the freed loop (see
+  Fixed). The price is one rule: the loop now WRITES to those watchers, so a watcher that is started or pending when
+  its loop is destroyed must still be allocated at that moment. Free it after `ev_loop_destroy`, or stop it first.
+  libev never touched the watchers there, so a program that freed a started watcher and then destroyed the loop
+  without running it again worked by accident; the two shapes to look for are a cleanup watcher's callback that
+  frees watchers which are still started, and an `atexit` handler that destroys the default loop after objects with
+  static storage that own started watchers. The default loop comes back clean after it: its structure is static, so
+  the detach resets what the loop counted of the user's watchers and empties the inotify list. `docs/ev.pod` says
+  all of it under `ev_loop_destroy`. Cost, callgrind on g++ 14 at -O3: about 500 instructions per loop destroyed
+  and 31 per watcher still on it, at teardown only. New cases, red on the released loop:
+  `test_destroy_detaches` (`tests/test-loops.c`: every watcher family of the build, an embedded loop included, on
+  every backend it has and once more with the signal watched through a signalfd, each run asserting the backend it
+  came up on, the descriptors counted), `test_default_loop_recreated`, and on Windows
+  `test_destroy_detaches_sockets` (`tests/test-wepoll.c`: the registry reference released); the unconditional floors
+  go 63 -> 71 and 17 -> 21.
+
 - **While a periodic is active, `ev_timer_next` answers no later than the loop's next read of the wall clock, half a
   second after its last (Huly QB-1277).** That read is how a pass sees the wall clock jump and reschedules the
   periodics (`time_update`, `ev_now_set`); an embedder that ran the loop only when `ev_timer_next` was due never let it
@@ -45,6 +67,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
   clock, as a system without a monotonic clock does.
 
 ### Fixed
+
+- **A watcher stopped after its loop was destroyed no longer reads and writes freed memory (Huly QB-1246).**
+  `ev_timer_stop`, `ev_io_stop` and their siblings test `ev_is_active` and then touch the loop -- its timer heap, its
+  fd lists, its counters -- and a watcher left started on a destroyed loop still read active. AddressSanitizer
+  reported it as a heap-use-after-free in `ev_timer_stop` and `ev_io_stop`; without a sanitizer it was a crash at
+  process exit (qb: a coroutine parked on a socket wait and owned by an object with static storage, SIGSEGV in a
+  g++ Release build; on Windows an access violation, `0xC0000005`, for one parked on a timeout). The loop now
+  detaches its watchers when it is destroyed (see Changed).
+- **The select backend no longer hands null pointers to `memcpy` while no descriptor is watched (Huly QB-1246).**
+  `select_poll` copied its four fd vectors on every pass; before the first `ev_io_start` they are null and their
+  size is 0, which `memcpy` does not allow: UndefinedBehaviorSanitizer stopped every program at its first pass on
+  `EVBACKEND_SELECT` (`ev_select.c`, "null pointer passed as argument 1"). The copies are made only when there is
+  something to copy; `select()` takes the null sets with `nfds` 0 as a plain timed wait, as before.
 
 - **The realtime timerfd behind periodics no longer counts in `ev_io_count`: a loop that has held a periodic stops
   polling the backend on every non-blocking pass (Huly QB-1277).** `EV_USE_TIMERFD` (off by default,

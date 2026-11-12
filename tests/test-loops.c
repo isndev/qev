@@ -24,6 +24,7 @@
 #include <signal.h>
 
 #ifndef _WIN32
+# include <fcntl.h>
 # include <pthread.h>
 # include <sys/types.h>
 # include <sys/wait.h>
@@ -301,6 +302,329 @@ static void test_stop_inactive(void) {
     ev_timer_stop(l, &t); /* never started */
     OK(!ev_is_active(&t), "ev_timer_stop on a never-started watcher is a no-op");
     ev_loop_destroy(l);
+}
+
+/* ---- a destroyed loop keeps none of its watchers (Huly QB-1246) ----
+ * ev_loop_destroy detaches every watcher still started on the loop or pending in it: each reads inactive and not
+ * pending, a stop that comes after the loop returns before it reads freed memory, a signal the loop watched is back
+ * to its default action, and the watcher starts again on another loop -- a timer with the delay it had left. Until
+ * and including qev 5.2 the loop left them "active" and a late stop wrote into the freed loop -- under AddressSanitizer the stops below
+ * are a heap-use-after-free there, which is why a failed state check returns before them. The loop's OWN watchers are
+ * not detached: its wake pipe is still closed with it (the descriptors are counted). Run on the backend the build
+ * picks, then on every other backend this build and this kernel have; each run asserts the backend it came up on.
+ * No cleanup watcher here: ev_loop_destroy invokes what is pending when it runs them, and the two fed timers must
+ * reach the detach still pending (the default-loop case below holds the cleanup watcher). */
+static int dd_timer_fired, dd_io_fired, dd_cleanup_ran;
+static int dd_left; /* watchers a destroyed loop left started: the other backends are not run on top of them */
+static void dd_timer_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ++dd_timer_fired; ev_break(l, EVBREAK_ALL); }
+#ifndef _WIN32
+static void dd_io_cb(struct ev_loop *l, ev_io *w, int r) { (void)w; (void)r; ++dd_io_fired; ev_break(l, EVBREAK_ALL); }
+/* the descriptors the process has open: the count moves when one leaks (the lowest free one does not always: a
+   backend that closes its own fd leaves that number free while a leak sits above it) */
+static int dd_open_fds(void) { int n = 0; for (int fd = 0; fd < 1024; ++fd) n += fcntl(fd, F_GETFD) != -1; return n; }
+#endif
+#if EV_PERIODIC_ENABLE
+static void dd_periodic_cb(struct ev_loop *l, ev_periodic *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_ASYNC_ENABLE
+static void dd_async_cb(struct ev_loop *l, ev_async *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_SIGNAL_ENABLE && !defined(_WIN32)
+static void dd_signal_cb(struct ev_loop *l, ev_signal *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_STAT_ENABLE
+static void dd_stat_cb(struct ev_loop *l, ev_stat *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_IDLE_ENABLE
+static void dd_idle_cb(struct ev_loop *l, ev_idle *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_PREPARE_ENABLE
+static void dd_prepare_cb(struct ev_loop *l, ev_prepare *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_CHECK_ENABLE
+static void dd_check_cb(struct ev_loop *l, ev_check *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_FORK_ENABLE
+static void dd_fork_cb(struct ev_loop *l, ev_fork *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#if EV_CLEANUP_ENABLE
+static void dd_cleanup_cb(struct ev_loop *l, ev_cleanup *w, int r) { (void)l; (void)w; (void)r; ++dd_cleanup_ran; }
+#endif
+#if EV_CHILD_ENABLE && !defined(_WIN32)
+static void dd_child_cb(struct ev_loop *l, ev_child *w, int r) { (void)l; (void)w; (void)r; }
+#endif
+#define DD_LEFT(w) (ev_is_active(w) || ev_is_pending(w))
+static void destroy_detaches_on(unsigned int flag, const char *backend) {
+    char            name[200];
+    int             left = 0, watchers = 4;
+    ev_timer        t_active, t_repeat, t_pending, t_both;
+#ifndef _WIN32
+    const int       fd_before = dd_open_fds();
+#endif
+    struct ev_loop *l = ev_loop_new(flag);
+    if (!l) { snprintf(name, sizeof name, "%s: a destroyed loop keeps none of its watchers", backend); SKIP(name, "the backend is not available on this host"); return; }
+    snprintf(name, sizeof name, "%s: the loop came up on the backend asked for (0x%x)", backend, ev_backend(l));
+    OK((flag & EVBACKEND_MASK) ? ev_backend(l) == (flag & EVBACKEND_MASK) : (ev_backend(l) & ev_supported_backends()) != 0, name);
+    ev_timer_init(&t_active, dd_timer_cb, 5., 0.);  ev_timer_start(l, &t_active);
+    ev_timer_init(&t_repeat, dd_timer_cb, 5., 7.);  ev_timer_start(l, &t_repeat);
+    ev_timer_init(&t_pending, dd_timer_cb, 5., 0.); /* never started: pending only, the state of an expired one-shot */
+    ev_timer_init(&t_both, dd_timer_cb, 6., 0.);    ev_timer_start(l, &t_both); /* started AND pending */
+#ifndef _WIN32
+    int   fds[2] = {-1, -1};
+    ev_io io_read, io_read2, io_write;
+    if (pipe(fds) != 0) { OK(0, "pipe() for the io watchers"); ev_loop_destroy(l); return; }
+    ev_io_init(&io_read, dd_io_cb, fds[0], EV_READ);   ev_io_start(l, &io_read);
+    ev_io_init(&io_read2, dd_io_cb, fds[0], EV_READ);  ev_io_start(l, &io_read2); /* two watchers on one fd: a list of two */
+    ev_io_init(&io_write, dd_io_cb, fds[1], EV_WRITE); ev_io_start(l, &io_write);
+    watchers += 3;
+#endif
+#if EV_ASYNC_ENABLE
+    ev_async as; ev_async_init(&as, dd_async_cb); ev_async_start(l, &as); ++watchers; /* creates the loop's wake pipe */
+    ev_async_send(l, &as);
+#endif
+#ifndef _WIN32
+    dd_io_fired = 0;
+    ev_run(l, EVRUN_NOWAIT); /* the backend learns the fds; the write watcher fires and breaks */
+    snprintf(name, sizeof name, "%s: the write watcher fired on the loop before it is destroyed", backend);
+    OK(dd_io_fired >= 1, name);
+#endif
+    ev_feed_event(l, &t_pending, EV_TIMER); /* fed after the pass: still pending when the loop goes */
+    ev_feed_event(l, &t_both, EV_TIMER);
+#if EV_PERIODIC_ENABLE
+    ev_periodic per; ev_periodic_init(&per, dd_periodic_cb, 0., 3600., 0); ev_periodic_start(l, &per); ++watchers;
+#endif
+#if EV_SIGNAL_ENABLE && !defined(_WIN32)
+    sigset_t  mask_before; sigprocmask(SIG_SETMASK, NULL, &mask_before); /* a signalfd loop blocks the signal it watches */
+    ev_signal sg; ev_signal_init(&sg, dd_signal_cb, SIGUSR2); ev_signal_start(l, &sg); ++watchers;
+    if (flag & EVFLAG_SIGNALFD) { /* without this, "not left blocked" below holds of a loop that never blocked it */
+        sigset_t mask_during; sigprocmask(SIG_SETMASK, NULL, &mask_during);
+        snprintf(name, sizeof name, "%s: the loop watches the signal through a signalfd: it blocked it", backend);
+        OK(!sigismember(&mask_before, SIGUSR2) && sigismember(&mask_during, SIGUSR2), name);
+    }
+#endif
+#if EV_STAT_ENABLE
+    ev_stat st; ev_stat_init(&st, dd_stat_cb, ".", 0.); ev_stat_start(l, &st); ++watchers;
+#endif
+#if EV_IDLE_ENABLE
+    ev_idle idl; ev_idle_init(&idl, dd_idle_cb); ev_idle_start(l, &idl); ++watchers;
+#endif
+#if EV_PREPARE_ENABLE
+    ev_prepare prep; ev_prepare_init(&prep, dd_prepare_cb); ev_prepare_start(l, &prep); ++watchers;
+#endif
+#if EV_CHECK_ENABLE
+    ev_check chk; ev_check_init(&chk, dd_check_cb); ev_check_start(l, &chk); ++watchers;
+#endif
+#if EV_FORK_ENABLE
+    ev_fork frk; ev_fork_init(&frk, dd_fork_cb); ev_fork_start(l, &frk); ++watchers;
+#endif
+#if EV_EMBED_ENABLE && !defined(_WIN32)
+    /* a loop embedded in this one, where the host has an embeddable backend: its watcher holds an io, a prepare and a
+       fork watcher of its own on the outer loop, and the detach reaches it through its prepare watcher */
+    ev_embed        emb;
+    unsigned int    embeddable = ev_embeddable_backends() & ev_supported_backends();
+    struct ev_loop *inner      = embeddable ? ev_loop_new(embeddable) : 0;
+    if (inner && !(ev_backend(inner) & ev_embeddable_backends())) { ev_loop_destroy(inner); inner = 0; }
+    if (inner) { ev_embed_init(&emb, 0, inner); ev_embed_start(l, &emb); ++watchers; }
+#endif
+    snprintf(name, sizeof name, "%s: two fed timers are pending before the loop is destroyed", backend);
+    OK(ev_is_pending(&t_pending) && ev_is_pending(&t_both), name);
+
+    ev_loop_destroy(l); /* `l` dangles from here: it is handed to the stops below, as a late destructor hands it */
+
+    left += DD_LEFT(&t_active) + DD_LEFT(&t_repeat) + DD_LEFT(&t_pending) + DD_LEFT(&t_both);
+#ifndef _WIN32
+    left += DD_LEFT(&io_read) + DD_LEFT(&io_read2) + DD_LEFT(&io_write);
+#endif
+#if EV_PERIODIC_ENABLE
+    left += DD_LEFT(&per);
+#endif
+#if EV_ASYNC_ENABLE
+    left += DD_LEFT(&as);
+#endif
+#if EV_SIGNAL_ENABLE && !defined(_WIN32)
+    left += DD_LEFT(&sg);
+#endif
+#if EV_STAT_ENABLE
+    left += DD_LEFT(&st);
+#endif
+#if EV_IDLE_ENABLE
+    left += DD_LEFT(&idl);
+#endif
+#if EV_PREPARE_ENABLE
+    left += DD_LEFT(&prep);
+#endif
+#if EV_CHECK_ENABLE
+    left += DD_LEFT(&chk);
+#endif
+#if EV_FORK_ENABLE
+    left += DD_LEFT(&frk);
+#endif
+#if EV_EMBED_ENABLE && !defined(_WIN32)
+    if (inner) left += DD_LEFT(&emb);
+#endif
+    snprintf(name, sizeof name, "%s: none of the %d watchers left on a destroyed loop reads active or pending (%d do)", backend, watchers, left);
+    OK(left == 0, name);
+    if (left) { /* a stop now would read and write the freed loop, and the signal is still that loop's */
+        dd_left = left;
+#ifndef _WIN32
+        close(fds[0]); close(fds[1]);
+#endif
+#if EV_EMBED_ENABLE && !defined(_WIN32)
+        if (inner) ev_loop_destroy(inner);
+#endif
+        return;
+    }
+
+    /* the late stops: each read the freed loop until ev_loop_destroy detached its watchers */
+    ev_timer_stop(l, &t_active); ev_timer_stop(l, &t_repeat); ev_timer_stop(l, &t_pending); ev_timer_stop(l, &t_both);
+#ifndef _WIN32
+    ev_io_stop(l, &io_read); ev_io_stop(l, &io_read2); ev_io_stop(l, &io_write);
+#endif
+#if EV_PERIODIC_ENABLE
+    ev_periodic_stop(l, &per);
+#endif
+#if EV_ASYNC_ENABLE
+    ev_async_stop(l, &as);
+#endif
+#if EV_SIGNAL_ENABLE && !defined(_WIN32)
+    ev_signal_stop(l, &sg);
+    {
+        /* a loop watches a signal through a handler or, with a signalfd, by blocking it: both must be given back */
+        sigset_t mask_after; sigprocmask(SIG_SETMASK, NULL, &mask_after);
+        snprintf(name, sizeof name, "%s: the signal the destroyed loop watched is back to its default action, and not left blocked", backend);
+        OK(signal(SIGUSR2, SIG_DFL) == SIG_DFL && (sigismember(&mask_before, SIGUSR2) || !sigismember(&mask_after, SIGUSR2)), name);
+    }
+#endif
+#if EV_STAT_ENABLE
+    ev_stat_stop(l, &st);
+#endif
+#if EV_IDLE_ENABLE
+    ev_idle_stop(l, &idl);
+#endif
+#if EV_PREPARE_ENABLE
+    ev_prepare_stop(l, &prep);
+#endif
+#if EV_CHECK_ENABLE
+    ev_check_stop(l, &chk);
+#endif
+#if EV_FORK_ENABLE
+    ev_fork_stop(l, &frk);
+#endif
+#if EV_EMBED_ENABLE && !defined(_WIN32)
+    if (inner) { ev_embed_stop(l, &emb); ev_loop_destroy(inner); } /* the embedded loop is its own: it outlived the outer one */
+#endif
+
+    /* a detached watcher is a stopped one: it starts again on another loop. The repeating timer is started as it
+       is -- no ev_timer_set -- and has the delay it had left: the detach made its deadline relative again, as
+       ev_timer_stop does. */
+    l = ev_loop_new(flag);
+    dd_timer_fired = dd_io_fired = 0;
+    if (l) {
+        ev_tstamp left_s;
+        ev_timer  wd; ev_timer_init(&wd, wd_cb, 2.0, 0.0); ev_timer_start(l, &wd);
+        ev_timer_start(l, &t_repeat);
+        left_s = ev_timer_remaining(l, &t_repeat);
+        ev_timer_stop(l, &t_repeat);
+        snprintf(name, sizeof name, "%s: a detached timer started again as it is has the delay it had left (%.3f s of 5)", backend, left_s);
+        OK(left_s > 3. && left_s < 5.5, name);
+        ev_timer_set(&t_active, 0.001, 0.); ev_timer_start(l, &t_active);
+        ev_run(l, 0); /* the timer fires and breaks, or the write watcher does */
+        if (!dd_timer_fired) ev_run(l, 0);
+#ifndef _WIN32
+        ev_io_start(l, &io_write); /* fires and breaks */
+        if (!dd_io_fired) ev_run(l, 0);
+        ev_io_stop(l, &io_write);
+#endif
+        ev_timer_stop(l, &t_active); ev_timer_stop(l, &wd);
+        ev_loop_destroy(l);
+    }
+    snprintf(name, sizeof name, "%s: a detached timer, stopped late, starts again on a new loop and fires", backend);
+    OK(dd_timer_fired >= 1, name);
+#ifndef _WIN32
+    snprintf(name, sizeof name, "%s: a detached io watcher, stopped late, starts again on a new loop and fires", backend);
+    OK(dd_io_fired >= 1, name);
+    close(fds[0]); close(fds[1]);
+# if EV_ASYNC_ENABLE
+    /* the loop's own wake pipe was not detached with the user's watchers: ev_loop_destroy still closed it */
+    snprintf(name, sizeof name, "%s: two loops created and destroyed with watchers on them leak no descriptor", backend);
+    OK(dd_open_fds() == fd_before, name);
+# endif
+#endif
+}
+static void test_destroy_detaches(void) {
+    static const struct { unsigned int flag; const char *name; } all[] = {
+        {EVBACKEND_SELECT, "select"}, {EVBACKEND_POLL, "poll"}, {EVBACKEND_EPOLL, "epoll"}, {EVBACKEND_KQUEUE, "kqueue"},
+        {EVBACKEND_PORT, "port"}, {EVBACKEND_LINUXAIO, "linuxaio"}, {EVBACKEND_IOURING, "iouring"},
+    };
+    unsigned int have = ev_supported_backends();
+    destroy_detaches_on(EVFLAG_AUTO, "auto"); /* unconditional: every build has a backend */
+    for (size_t i = 0; i < sizeof(all) / sizeof(all[0]) && !dd_left; ++i)
+        if (have & all[i].flag)
+            destroy_detaches_on(all[i].flag, all[i].name);
+#if defined(EV_USE_SIGNALFD) && EV_USE_SIGNALFD && EV_SIGNAL_ENABLE
+    /* every run above watched its signal through a handler; this one asks for a signalfd, where the loop BLOCKS the
+       signal instead, and the detach must give the mask back */
+    if (!dd_left)
+        destroy_detaches_on(EVFLAG_AUTO | EVFLAG_SIGNALFD, "auto+signalfd");
+#endif
+}
+
+/* ---- the DEFAULT loop comes back clean after it was destroyed with watchers on it (Huly QB-1246) ----
+ * Its structure is static: ev_default_loop() after ev_loop_destroy() finds what the destroy left. The detach resets
+ * what the loop counted of the user's watchers -- a count left above zero made the next ev_run wait for watchers
+ * that are gone, and one left below zero (the loop's own child watcher stopped without the reference it gave back)
+ * made it wait for ever with none -- and empties the inotify list a late ev_stat_stop no longer reaches, where a
+ * stat started again linked to itself. */
+static void test_default_loop_recreated(void) {
+    struct ev_loop *d = ev_default_loop(0);
+    ev_timer        t;
+    int             left;
+    if (!d) { OK(0, "ev_default_loop()"); return; }
+    ev_timer_init(&t, dd_timer_cb, 5., 0.); ev_timer_start(d, &t);
+#if EV_STAT_ENABLE
+    ev_stat st; ev_stat_init(&st, dd_stat_cb, ".", 0.); ev_stat_start(d, &st);
+#endif
+#if EV_CHILD_ENABLE && !defined(_WIN32)
+    ev_child ch; ev_child_init(&ch, dd_child_cb, 0, 0); ev_child_start(d, &ch);
+#endif
+#if EV_CLEANUP_ENABLE
+    ev_cleanup cln; ev_cleanup_init(&cln, dd_cleanup_cb); ev_cleanup_start(d, &cln);
+    dd_cleanup_ran = 0;
+#endif
+    ev_loop_destroy(d);
+    left = DD_LEFT(&t);
+#if EV_CLEANUP_ENABLE
+    left += DD_LEFT(&cln);
+    OK(dd_cleanup_ran == 1, "the cleanup watcher of a destroyed loop ran once, before the loop detached it");
+#endif
+#if EV_STAT_ENABLE
+    left += DD_LEFT(&st);
+#endif
+#if EV_CHILD_ENABLE && !defined(_WIN32)
+    left += DD_LEFT(&ch);
+#endif
+    OK(left == 0, "the watchers left on the destroyed default loop read inactive and not pending");
+    if (left) return; /* the stops below would write into the loop's stale lists */
+    d = ev_default_loop(0);
+    OK(d && *ev_active_count_addr(d) == 0 && ev_io_count(d) == 0, "the default loop, created again, counts nothing active");
+    if (!d) return;
+#if EV_STAT_ENABLE
+    ev_stat_stop(d, &st);  /* late: returns before it unlinks */
+    ev_stat_start(d, &st); /* on the loop created again */
+    OK(((ev_watcher_list *) &st)->next != (ev_watcher_list *) &st, "a stat watcher started again on the default loop is not linked to itself");
+    ev_stat_stop(d, &st);
+#endif
+#if EV_CHILD_ENABLE && !defined(_WIN32)
+    ev_child_stop(d, &ch);
+#endif
+#if EV_CLEANUP_ENABLE
+    ev_cleanup_stop(d, &cln);
+#endif
+    ev_timer_stop(d, &t);
+    ev_loop_destroy(d); /* a clean destroy this time */
+    d = ev_default_loop(0);
+    OK(d && *ev_active_count_addr(d) == 0, "after a clean destroy the default loop counts nothing active either");
+    if (d) ev_loop_destroy(d);
 }
 
 /* ---- a thousand timers all fire ---- */
@@ -1522,6 +1846,8 @@ int main(void) {
     test_io_count();
     test_feed_event();
     test_stop_inactive();
+    test_destroy_detaches();
+    test_default_loop_recreated();
     test_many_timers();
     test_async_from_thread();
     test_nowait_async();
@@ -1567,17 +1893,19 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Sixty-three checks are unconditional in every profile on every platform (only the
+    /* Seventy-one checks are unconditional in every profile on every platform (only the
        cross-thread cases -- the concurrent loop creation and the async senders, which skip when
        a thread cannot be created --, the fork case, the signal half of the NOWAIT cases, the pipe
        halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
        async watchers, the nanosecond epoll wait on a libc or kernel without epoll_pwait2 and
        the Linux backend cases where the build or the kernel lacks io_uring or aio
        can legitimately skip, and the backend probe skips only where every backend exists,
-       which no platform has). A run below that floor measured nothing and must not read as a
-       pass. */
-    if (g_run < 63) {
-        printf("== FAIL: only %d checks ran; at least 63 are unconditional ==\n", g_run);
+       which no platform has; of the destroyed-loop case, the five checks of its run on the default
+       backend that need neither a pipe, a signal nor an optional watcher family, and the three of
+       the default loop created again). A run below that floor measured nothing and must not read
+       as a pass. */
+    if (g_run < 71) {
+        printf("== FAIL: only %d checks ran; at least 71 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

@@ -361,6 +361,41 @@ static void test_shared_socket(void) {
     closesocket(a); closesocket(b);
 }
 
+/* ---- 8. a destroyed loop keeps none of its socket watchers (Huly QB-1246) ----
+ * ev_loop_destroy detaches the ev_io watchers still started on it: each reads inactive, and gives back the
+ * reference it held on the process-wide fd registry, as ev_io_stop does last -- its fd reads -1. A stop that comes
+ * after the loop then returns before it reads freed memory or releases the registry slot a second time, and the
+ * same socket is watched again on another loop. Through qev 5.2 the watchers stayed "active" with their registry fd, and
+ * the late stop wrote into the freed loop (test-loops.c holds the other watcher families). */
+static int dds_hits;
+static void dds_cb(struct ev_loop *l, ev_io *w, int r) { (void)w; if (DELIVERED(r, EV_READ)) ++dds_hits; ev_break(l, EVBREAK_ALL); }
+static void test_destroy_detaches_sockets(void) {
+    SOCKET a, b;
+    if (tcp_pair(&a, &b)) { SKIP("a destroyed loop keeps none of its socket watchers", "loopback pair failed"); return; }
+    struct ev_loop *l = ev_loop_new(EVBACKEND_EPOLL);
+    ev_io r1, r2, wa;
+    ev_io_init_sock(&r1, dds_cb, b, EV_READ); ev_io_start(l, &r1);
+    ev_io_init_sock(&r2, dds_cb, b, EV_READ); ev_io_start(l, &r2); /* two watchers on one socket: one registry fd, two references */
+    ev_io_init_sock(&wa, dds_cb, a, EV_READ); ev_io_start(l, &wa);
+    ev_run(l, EVRUN_NOWAIT); /* wepoll learns the sockets */
+    OK(r1.fd >= 0 && r1.fd == r2.fd && wa.fd >= 0 && ev_io_count(l) == 3, "three socket watchers hold their registry fds before the loop is destroyed");
+    ev_loop_destroy(l); /* `l` dangles from here */
+    OK(!ev_is_active(&r1) && !ev_is_active(&r2) && !ev_is_active(&wa), "the socket watchers left on a destroyed loop read inactive");
+    OK(r1.fd == -1 && r2.fd == -1 && wa.fd == -1, "and gave their registry fds back, as ev_io_stop does");
+    if (ev_is_active(&r1) || ev_is_active(&r2) || ev_is_active(&wa)) { closesocket(a); closesocket(b); return; } /* a stop now would write into the freed loop */
+    ev_io_stop(l, &r1); ev_io_stop(l, &r2); ev_io_stop(l, &wa); /* late: each returns at once */
+    l = ev_loop_new(EVBACKEND_EPOLL);
+    dds_hits = 0;
+    ev_io_start(l, &r1); /* the same watcher, the same socket, another loop: the registry hands it a fd again */
+    send(a, "x", 1, 0);
+    (void) wait_readable(b);
+    ev_timer wd; ev_timer_init(&wd, wd_cb, 3.0, 0.0); ev_timer_start(l, &wd);
+    ev_run(l, 0);
+    OK(dds_hits == 1 && r1.fd >= 0, "a detached socket watcher starts again on a new loop and is delivered to");
+    ev_io_stop(l, &r1); ev_timer_stop(l, &wd); ev_loop_destroy(l);
+    closesocket(a); closesocket(b);
+}
+
 int main(void) {
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -390,16 +425,17 @@ int main(void) {
     test_accept();
     test_nopoll_socket();
     test_shared_socket();
+    test_destroy_detaches_sockets();
 
     printf("\n== wepoll: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
     WSACleanup();
 
-    /* All seventeen checks are unconditional on Windows (read 3, modify 2, half-close 1,
-       64 pairs 1, accept 1, NOPOLL 5, shared socket 4 -- the first five cases' checks measured
+    /* All twenty-one checks are unconditional on Windows (read 3, modify 2, half-close 1,
+       64 pairs 1, accept 1, NOPOLL 5, shared socket 4, the destroyed loop 4 -- the first five cases' checks measured
        nothing until QB-194, see the header); a run that skipped its way to zero measured nothing
        and must not read as a pass. */
-    if (g_run < 17) {
-        printf("== FAIL: only %d checks ran; all 17 are unconditional on Windows ==\n", g_run);
+    if (g_run < 21) {
+        printf("== FAIL: only %d checks ran; all 21 are unconditional on Windows ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

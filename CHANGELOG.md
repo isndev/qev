@@ -6,6 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`ev_break_state (loop)`: the break the loop holds (Huly QB-1246).** `EVBREAK_CANCEL` when it holds none, otherwise
+  what `ev_break` last asked. `ev_run` clears it as it begins, and the `ev_run` that ends on `EVBREAK_ONE` resets it;
+  `EVBREAK_ALL` stays for the runs around it. A program that nests runs loses a break asked of an outer run as soon as
+  a nested `ev_run` begins under it, and one that keeps such a request itself had to guess when to say it again -- and
+  said `EVBREAK_ONE` over an `EVBREAK_ALL` asked meanwhile. qb keeps one for the run a `break_one()` is meant for,
+  and says it again, from that run, only when this reads `EVBREAK_CANCEL`. C++: `ev::loop_ref::break_state ()`. One
+  more exported name (89 in the embedded list of `CMakeLists.txt`, `Symbols.ev`), documented in `docs/ev.pod` beside
+  `ev_break`.
+  Cases: `test_break_state` (`tests/test-loops.c`, nine checks, all unconditional: the floor goes from 71 to 80) and
+  `test_break_state` (`tests/test-cxx.cpp`, floor 9 to 10).
+
 ### Changed
 
 - **`ev_loop_destroy` detaches every watcher still started on the loop or pending in it (Huly QB-1246).** Each is

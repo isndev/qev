@@ -1163,6 +1163,20 @@ This "break state" will be cleared on the next call to C<ev_run>.
 It is safe to call C<ev_break> from outside any C<ev_run> calls, too, in
 which case it will have no effect.
 
+=item int ev_break_state (loop)
+
+Returns the break the loop holds: C<EVBREAK_CANCEL> when it holds none,
+otherwise what C<ev_break> last asked, C<EVBREAK_ONE> or C<EVBREAK_ALL>.
+Every C<ev_run> clears it as it begins, and the C<ev_run> that ends on
+C<EVBREAK_ONE> resets it; C<EVBREAK_ALL> stays, for the runs around it.
+
+A program that nests runs can lose a break this way: one asked for an outer
+run is forgotten as soon as a nested C<ev_run> begins under it. A program
+that keeps such a request itself says it again -- C<ev_break (loop,
+EVBREAK_ONE)> once the nested runs have returned -- only when this function
+returns C<EVBREAK_CANCEL>, and so leaves a break asked meanwhile as it is.
+Like any read of the loop, it is for the thread that runs the loop.
+
 =item ev_ref (loop)
 
 =item ev_unref (loop)

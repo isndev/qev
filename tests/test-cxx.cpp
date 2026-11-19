@@ -132,6 +132,15 @@ static void test_direct_invocation_loop(ev::loop_ref a, ev::loop_ref b) {
 static void periodic_fn(ev::periodic &, int) {}
 #endif
 
+static void test_break_state(ev::loop_ref l) {
+    /* break_state () is ev_break_state (): what break_loop () asked, until a run takes it. */
+    const bool none = l.break_state() == EVBREAK_CANCEL;
+    l.break_loop(ev::ALL);
+    const bool held = l.break_state() == EVBREAK_ALL;
+    l.run(ev::NOWAIT);
+    OK(none && held && l.break_state() == EVBREAK_CANCEL, "break_state () reads what break_loop () asked, and nothing once a run has begun");
+}
+
 static void test_count_addrs(ev::loop_ref l) {
 #if EV_PERIODIC_ENABLE
     /* periodic_count_addr () is the loop's own periodic count, the twin of timer_count_addr (): a
@@ -232,11 +241,13 @@ int main() {
         ev::dynamic_loop b;
         test_callback_forms(a);
         test_direct_invocation_loop(a, b);
+        test_break_state(a);
         test_count_addrs(a);
 #else
         ev::default_loop a;
         test_callback_forms(a);
         test_direct_invocation_loop(a, a);
+        test_break_state(a);
         test_count_addrs(a);
 #endif
     }
@@ -247,9 +258,9 @@ int main() {
 #endif
 
     std::printf("\n== cxx: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
-    /* Nine checks need nothing but a loop and are in every profile on every platform. */
-    if (g_run < 9) {
-        std::printf("== FAIL: only %d checks ran; at least 9 are unconditional ==\n", g_run);
+    /* Ten checks need nothing but a loop and are in every profile on every platform. */
+    if (g_run < 10) {
+        std::printf("== FAIL: only %d checks ran; at least 10 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;

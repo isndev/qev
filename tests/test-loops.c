@@ -183,6 +183,59 @@ static void test_iteration_count(void) {
     ev_loop_destroy(l);
 }
 
+/* ---- ev_break_state: the break the loop holds, and when an ev_run takes it ---- */
+static int bs_in_cb, bs_after_pass, bs_after_inner;
+static void bs_one_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ev_break(l, EVBREAK_ONE); bs_in_cb = ev_break_state(l); }
+static void bs_all_cb(struct ev_loop *l, ev_timer *w, int r) { (void)w; (void)r; ev_break(l, EVBREAK_ALL); }
+/* a handler of an outer run: asks a break of that run, then makes one nested pass, which forgets it */
+static void bs_pass_cb(struct ev_loop *l, ev_timer *w, int r) {
+    (void)w; (void)r;
+    ev_break(l, EVBREAK_ONE);
+    ev_run(l, EVRUN_NOWAIT);
+    bs_after_pass = ev_break_state(l);
+    ev_break(l, EVBREAK_ONE); /* said again: this is what ends the outer run */
+}
+/* a handler of an outer run: opens an inner run that a break of EVERY run ends */
+static void bs_inner_cb(struct ev_loop *l, ev_timer *w, int r) {
+    ev_timer all;
+    (void)w; (void)r;
+    ev_timer_init(&all, bs_all_cb, 0.001, 0.0); ev_timer_start(l, &all);
+    ev_run(l, 0);
+    bs_after_inner = ev_break_state(l);
+}
+static void test_break_state(void) {
+    struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
+    ev_timer t, keep;
+    OK(ev_break_state(l) == EVBREAK_CANCEL, "ev_break_state: a fresh loop holds no break");
+    ev_break(l, EVBREAK_ONE);
+    OK(ev_break_state(l) == EVBREAK_ONE, "ev_break_state: a break asked outside any run is held");
+    ev_run(l, EVRUN_NOWAIT);
+    OK(ev_break_state(l) == EVBREAK_CANCEL, "ev_break_state: the next ev_run clears it as it begins");
+    /* a far timer from here on: every run below ends by a break, never for want of a watcher */
+    ev_timer_init(&keep, stop_cb, 3600.0, 0.0); ev_timer_start(l, &keep);
+
+    bs_in_cb = -1;
+    ev_timer_init(&t, bs_one_cb, 0.001, 0.0); ev_timer_start(l, &t);
+    ev_run(l, 0);
+    OK(bs_in_cb == EVBREAK_ONE, "ev_break_state: EVBREAK_ONE is held from the ev_break to the end of the run");
+    OK(ev_break_state(l) == EVBREAK_CANCEL, "ev_break_state: the run that ends on EVBREAK_ONE resets it");
+
+    bs_after_pass = -1;
+    ev_timer_init(&t, bs_pass_cb, 0.001, 0.0); ev_timer_start(l, &t);
+    ev_run(l, 0);
+    OK(bs_after_pass == EVBREAK_CANCEL, "ev_break_state: a nested pass makes the loop forget a break asked of the outer run");
+
+    bs_after_inner = -1;
+    ev_timer_init(&t, bs_inner_cb, 0.001, 0.0); ev_timer_start(l, &t);
+    ev_run(l, 0);
+    OK(bs_after_inner == EVBREAK_ALL, "ev_break_state: EVBREAK_ALL outlives the nested run it ended, for the outer one");
+    OK(ev_break_state(l) == EVBREAK_ALL, "ev_break_state: and the outer one, until the next ev_run begins");
+    ev_run(l, EVRUN_NOWAIT);
+    OK(ev_break_state(l) == EVBREAK_CANCEL, "ev_break_state: which clears it");
+    ev_timer_stop(l, &keep);
+    ev_loop_destroy(l);
+}
+
 /* ---- ev_active_count follows start / unref / stop / one-shot expiry ---- */
 static void test_active_count(void) {
     struct ev_loop *l = ev_loop_new(EVFLAG_AUTO);
@@ -1841,6 +1894,7 @@ int main(void) {
     test_backend_unavailable();
     test_now_update();
     test_iteration_count();
+    test_break_state();
     test_active_count();
     test_count_addr();
     test_io_count();
@@ -1893,7 +1947,7 @@ int main(void) {
 
     printf("\n== loops: %d run, %d failed, %d skipped ==\n", g_run, g_fail, g_skip);
 
-    /* Seventy-one checks are unconditional in every profile on every platform (only the
+    /* Eighty checks are unconditional in every profile on every platform (only the
        cross-thread cases -- the concurrent loop creation and the async senders, which skip when
        a thread cannot be created --, the fork case, the signal half of the NOWAIT cases, the pipe
        halves of the io-count and NOPOLL cases, the wake-pending case of a profile without
@@ -1904,8 +1958,8 @@ int main(void) {
        backend that need neither a pipe, a signal nor an optional watcher family, and the three of
        the default loop created again). A run below that floor measured nothing and must not read
        as a pass. */
-    if (g_run < 71) {
-        printf("== FAIL: only %d checks ran; at least 71 are unconditional ==\n", g_run);
+    if (g_run < 80) {
+        printf("== FAIL: only %d checks ran; at least 80 are unconditional ==\n", g_run);
         return 1;
     }
     return g_fail ? 1 : 0;
